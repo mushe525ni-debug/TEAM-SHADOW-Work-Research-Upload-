@@ -103,6 +103,8 @@ body{background:var(--ts-bg);min-height:100vh;color:var(--ts-text);transition:ba
 .table-row-clickable:hover{background:rgba(124,92,255,.08)!important;}
 .sidebar-backdrop{display:none;}
 .sidebar-hamburger{display:none;}
+.upload-progress{width:100%;height:6px;background:var(--ts-border);border-radius:3px;overflow:hidden;margin-top:.4rem;}
+.upload-progress-bar{height:100%;background:linear-gradient(90deg,var(--ts-primary),var(--ts-primary-2));transition:width .3s ease;}
 @media (max-width: 991.98px) {
   .sidebar{position:fixed!important;left:0;top:64px;bottom:0;width:260px;z-index:1050;transform:translateX(-100%);transition:transform .25s ease;overflow-y:auto;box-shadow:4px 0 20px rgba(0,0,0,.4);}
   .sidebar.open{transform:translateX(0);}
@@ -177,10 +179,11 @@ const FIREBASE_CONFIG = {
   appId: "1:1057812105084:web:ca1fd83820c16bb8bb46f9"
 };
 
-const APP_VERSION = 'v9.0-cloud';
+const APP_VERSION = 'v10.0-cloud';
+const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 const SECTORS = ['AI & Software','Cybersecurity','Healthcare','Biotechnology','Agriculture','Energy','Climate & Environment','Water & Waste','Finance / FinTech','Business','Education','Manufacturing','Robotics','Logistics','Transportation','Daily-Life Problems','Other'];
 const WORK_TYPES = {problem_discovery:'Problem Discovery',problem_research:'Problem Research',market_research:'Market Research',customer_research:'Customer Research',competitor_research:'Competitor Research',solution_research:'Solution Research',validation:'Validation',experiment:'Experiment',project_update:'Project Update',other:'Other'};
-const MAX_FILE_SIZE = 100*1024*1024;
+const MAX_FILE_SIZE = 200*1024*1024;
 const MAX_AVATAR_SIZE = 5*1024*1024;
 const ALLOWED_TYPES = ['application/pdf','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation','text/plain','image/jpeg','image/png','image/webp','image/gif'];
 
@@ -213,23 +216,23 @@ const Cloud = {
   async getActivity(){ const s = await fsdb.collection('activity').orderBy('created_at','desc').limit(500).get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })); },
   async addActivity(a){ const ref = fsdb.collection('activity').doc(); await ref.set({ ...a, _id: ref.id, created_at: new Date().toISOString() }); },
   async uploadFile(submissionId, file, onProgress){
-    if(!storage) throw new Error('Firebase Storage not enabled. Enable it in Firebase Console.');
-    const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
-    const safeExt = ext.replace(/[^a-z0-9]/g,'').slice(0,10) || 'bin';
-    const path = `submissions/${submissionId}/${Date.now()}_${Math.random().toString(36).slice(2,10)}.${safeExt}`;
+    if(!storage) throw new Error('Storage not enabled. Enable it in Firebase Console (Build → Storage → Get started → Test mode → asia-south1).');
+    const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,10) || 'bin';
+    const path = `submissions/${submissionId}/${Date.now()}_${Math.random().toString(36).slice(2,10)}.${ext}`;
     const ref = storage.ref().child(path);
     const task = ref.put(file, { contentType: file.type || 'application/octet-stream' });
-    if(onProgress && typeof task.on === 'function'){
-      task.on('state_changed', s => { try { onProgress((s.bytesTransferred / s.totalBytes) * 100); } catch(e){} });
-    }
-    await task;
-    const url = await ref.getDownloadURL();
-    return { url, storagePath: path };
+    return new Promise((resolve, reject) => {
+      task.on('state_changed',
+        s => { if(onProgress) try{ onProgress(Math.round((s.bytesTransferred/s.totalBytes)*100)); }catch(e){} },
+        err => reject(err),
+        async () => {
+          try { const url = await task.snapshot.ref.getDownloadURL(); resolve({ url, storagePath: path }); }
+          catch(e){ reject(e); }
+        }
+      );
+    });
   },
-  async deleteStorageFile(storagePath){
-    if(!storage) return;
-    try { await storage.ref(storagePath).delete(); } catch(e){ console.warn('Storage delete failed:', e); }
-  }
+  async deleteStorageFile(storagePath){ if(!storage) return; try { await storage.ref(storagePath).delete(); } catch(e){ console.warn('Storage delete failed:', e); } }
 };
 
 const Utils = {
@@ -242,10 +245,27 @@ const Utils = {
   escape(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 };
 
+const Session = {
+  set(email){
+    localStorage.setItem('ts_session_email', email);
+    localStorage.setItem('ts_session_expires', String(Date.now() + SESSION_DURATION_MS));
+  },
+  get(){
+    const email = localStorage.getItem('ts_session_email');
+    const expires = parseInt(localStorage.getItem('ts_session_expires') || '0', 10);
+    if(!email || expires < Date.now()){ this.clear(); return null; }
+    this.touch();
+    return email;
+  },
+  touch(){ const email = localStorage.getItem('ts_session_email'); if(email) localStorage.setItem('ts_session_expires', String(Date.now() + SESSION_DURATION_MS)); },
+  clear(){ localStorage.removeItem('ts_session_email'); localStorage.removeItem('ts_session_expires'); }
+};
+
 const App = {
   currentUser:null, currentRoute:'', _pendingAvatar:null, _pendingFiles:[], _adminSubSector:'all',
   users:[], submissions:[], notifications:[], activity:[],
-  _themeModes:['dark','light','system'], _themeIcons:{dark:'bi-moon-stars-fill',light:'bi-sun-fill',system:'bi-circle-half'},
+  _themeModes:['dark','light','system'],
+  _themeIcons:{dark:'bi-moon-stars-fill',light:'bi-sun-fill',system:'bi-circle-half'},
 
   async init(){
     this.applyStoredTheme();
@@ -256,16 +276,17 @@ const App = {
     document.getElementById('year').textContent = new Date().getFullYear();
     try {
       await this.refreshAll();
-      const sessionEmail = localStorage.getItem('ts_session_email');
+      const sessionEmail = Session.get();
       if(sessionEmail){
         const u = this.users.find(x => String(x.email).toLowerCase() === sessionEmail.toLowerCase());
         if(u && u.status === 'active') this.currentUser = u;
-        else localStorage.removeItem('ts_session_email');
+        else Session.clear();
       }
     } catch(e){ console.error('Initial load error:', e); this.toast('Cloud connection failed: ' + e.message, 'danger', 8000); }
     document.getElementById('loadingOverlay').classList.add('hidden');
     window.addEventListener('hashchange',()=>this.route());
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if(this.getThemeMode() === 'system') this.applyTheme('system'); });
+    document.addEventListener('click', () => Session.touch(), { passive: true });
     this.route();
   },
 
@@ -275,16 +296,11 @@ const App = {
     if(mode === 'system'){
       const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       document.documentElement.setAttribute('data-bs-theme', isDark ? 'dark' : 'light');
-    } else {
-      document.documentElement.setAttribute('data-bs-theme', mode);
-    }
+    } else { document.documentElement.setAttribute('data-bs-theme', mode); }
     localStorage.setItem('ts_theme', mode);
     this.updateThemeIcon();
   },
-  updateThemeIcon(){
-    const btn = document.getElementById('themeToggleBtn');
-    if(btn){ const i = btn.querySelector('i'); if(i) i.className = 'bi ' + this._themeIcons[this.getThemeMode()]; }
-  },
+  updateThemeIcon(){ const btn = document.getElementById('themeToggleBtn'); if(btn){ const i = btn.querySelector('i'); if(i) i.className = 'bi ' + this._themeIcons[this.getThemeMode()]; } },
   cycleTheme(){
     const cur = this.getThemeMode();
     const idx = this._themeModes.indexOf(cur);
@@ -303,7 +319,6 @@ const App = {
       ]);
     } catch(e){ console.warn('refreshAll warn:', e); }
   },
-
   async refreshUser(){ if(!this.currentUser) return; try { const fresh = await Cloud.getUserById(this.currentUser._docId); if(fresh) this.currentUser = fresh; } catch(e){} },
 
   route(){
@@ -342,7 +357,7 @@ const App = {
 
   async logout(){
     if(this.currentUser) await this.log('logout',`User logged out: ${this.currentUser.email}`);
-    localStorage.removeItem('ts_session_email');
+    Session.clear();
     this.currentUser = null;
     this.notifications = [];
     this.toast('Logged out.','info');
@@ -363,7 +378,7 @@ const App = {
         ${!isFounder?`<li class="nav-item"><a class="nav-link" href="#new-submission"><i class="bi bi-plus-lg"></i> New</a></li>`:''}
         <li class="nav-item"><a class="nav-link" href="#members"><i class="bi bi-people"></i> Members</a></li>
         <li class="nav-item"><a class="nav-link position-relative" href="#notifications"><i class="bi bi-bell${unread?'-fill':''}"></i>${unread?`<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.6rem;">${unread}</span>`:''}</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" id="themeToggleBtn" onclick="App.cycleTheme();return false;" title="Cycle theme (Dark/Light/System)"><i class="bi ${themeIcon}"></i></a></li>
+        <li class="nav-item"><a class="nav-link" href="#" id="themeToggleBtn" onclick="App.cycleTheme();return false;" title="Cycle theme"><i class="bi ${themeIcon}"></i></a></li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle d-flex align-items-center gap-2" href="#" data-bs-toggle="dropdown">
             ${this.avatarHtml(u,'avatar-sm')}<span>${this.esc(u.full_name.split(' ')[0])}</span>
@@ -371,7 +386,7 @@ const App = {
           <ul class="dropdown-menu dropdown-menu-end">
             <li><a class="dropdown-item" href="#profile"><i class="bi bi-person-circle me-2"></i> My Profile</a></li>
             <li><a class="dropdown-item" href="#edit-profile"><i class="bi bi-pencil me-2"></i> Edit Profile</a></li>
-            <li><a class="dropdown-item" href="#" onclick="App.refreshAll().then(()=>App.toast('✓ Data refreshed from cloud.','success'));return false;"><i class="bi bi-arrow-clockwise me-2"></i> Refresh Data</a></li>
+            <li><a class="dropdown-item" href="#" onclick="App.refreshAll().then(()=>App.toast('✓ Refreshed.','success'));return false;"><i class="bi bi-arrow-clockwise me-2"></i> Refresh Data</a></li>
             <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item text-danger" href="#logout"><i class="bi bi-box-arrow-right me-2"></i> Logout</a></li>
           </ul>
@@ -481,8 +496,8 @@ const App = {
 
   async doRegister(e){
     e.preventDefault();
-    const form = e.target; const btn = document.getElementById('regBtn');
-    const fd = new FormData(form);
+    const btn = document.getElementById('regBtn');
+    const fd = new FormData(e.target);
     const name = (fd.get('full_name')||'').trim();
     const email = (fd.get('email')||'').trim().toLowerCase();
     const pass = (fd.get('password')||'').trim();
@@ -500,7 +515,7 @@ const App = {
       const isFounder = allUsers.length === 0;
       await Cloud.createUser({ full_name: name, email, password: pass, gender: fd.get('gender')||'prefer_not_to_say', age: parseInt(fd.get('age'))||null, sector: fd.get('sector')||'', bio: (fd.get('bio')||'').trim(), avatar: this._pendingAvatar||null, role: isFounder?'founder':'member', status: isFounder?'active':'pending', last_login: null });
       this.users = await Cloud.getUsers();
-      if(isFounder){ this.toast('✓ Account created! You are the Founder. Login now.','success',6000); }
+      if(isFounder){ this.toast('✓ Account created! You are the Founder.','success',6000); }
       else { await this.notifyFounders('New member request', `${name} (${email}) requested access.`, 'admin-members'); this.toast('Account created. Waiting for approval.','info',6000); }
       this.go('login');
     } catch(err){ console.error(err); this.toast('Registration failed: ' + err.message, 'danger', 6000); btn.disabled = false; btn.innerHTML = 'Create Account'; }
@@ -513,10 +528,11 @@ const App = {
       <div class="card"><div class="card-body p-4">
         <h3 class="mb-1">Welcome Back</h3>
         <p class="small mb-4" style="color:var(--ts-muted);">Sign in from any device — data is cloud-synced.</p>
-        <div class="alert alert-success small py-2 mb-3"><i class="bi bi-cloud-check-fill"></i> Same account works on phone, laptop, tablet</div>
+        <div class="alert alert-success small py-2 mb-3"><i class="bi bi-cloud-check-fill"></i> Same account works on phone, laptop, tablet. Session lasts 24 hours.</div>
         <form onsubmit="App.doLogin(event)" autocomplete="off" id="loginForm">
           <div class="mb-3"><label class="form-label">Email</label><input type="email" name="email" class="form-control" required autofocus autocomplete="off"></div>
           <div class="mb-3"><label class="form-label">Password</label><input type="password" name="password" class="form-control" required autocomplete="new-password"></div>
+          <div class="form-check mb-3"><input type="checkbox" class="form-check-input" id="rememberMe" checked><label class="form-check-label small" for="rememberMe">Keep me signed in for 24 hours</label></div>
           <button class="btn btn-primary w-100 btn-lg" id="loginBtn">Sign In</button>
         </form>
         <p class="text-center small mt-3 mb-0" style="color:var(--ts-muted);">New here? <a href="#register">Request access</a></p>
@@ -530,6 +546,7 @@ const App = {
     const fd = new FormData(e.target);
     const email = (fd.get('email')||'').trim().toLowerCase();
     const pass  = (fd.get('password')||'').trim();
+    const keep = document.getElementById('rememberMe')?.checked !== false;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Signing in…';
     try {
@@ -541,7 +558,8 @@ const App = {
       if(user.status==='deactivated'){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('Account deactivated.','danger'); }
       await Cloud.updateUser(user._docId, { last_login: this.now() });
       user.last_login = this.now();
-      localStorage.setItem('ts_session_email', user.email);
+      if(keep) Session.set(user.email);
+      else localStorage.removeItem('ts_session_email');
       this.currentUser = user;
       this.notifications = await Cloud.getNotifications(String(user._docId));
       await this.log('login', `User logged in: ${email}`);
@@ -612,9 +630,28 @@ const App = {
         <a href="#my-submissions/submitted" class="btn btn-sm ${filter==='submitted'?'btn-info':'btn-outline-secondary'}">Submitted (${counts.submitted+counts.under_review+counts.approved})</a>
       </div></div>
       <div class="card"><div class="card-body">
-        ${subs.length?subs.map(s=>`<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap py-3 border-bottom table-row-clickable" style="border-color:var(--ts-border)!important;" onclick="App.go('view-submission/${s._docId}')"><div class="flex-grow-1 min-w-0"><div class="fw-semibold fs-6">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);margin-top:.25rem;"><span class="badge-status" style="background:rgba(124,92,255,.15);color:var(--ts-primary-2);">${WORK_TYPES[s.work_type]||s.work_type}</span>${s.sector?` · ${this.esc(s.sector)}`:''} · Updated ${this.ago(s.updated_at)}${s.attachments?.length?` · <i class="bi bi-paperclip"></i> ${s.attachments.length}`:''}</div></div><div class="d-flex gap-2"><span class="badge-status status-${s.status}">${s.status}</span>${s.status==='draft'||s.edit_permission?`<span class="badge bg-primary">✏️ Editable</span>`:`<span class="badge bg-secondary"><i class="bi bi-lock"></i> Locked</span>`}</div></div>`).join(''):`<div class="empty-state"><i class="bi bi-journal-x"></i><h6>No submissions here</h6></div>`}
+        ${subs.length?subs.map(s=>`<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap py-3 border-bottom table-row-clickable" style="border-color:var(--ts-border)!important;" onclick="App.go('view-submission/${s._docId}')"><div class="flex-grow-1 min-w-0"><div class="fw-semibold fs-6">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);margin-top:.25rem;"><span class="badge-status" style="background:rgba(124,92,255,.15);color:var(--ts-primary-2);">${WORK_TYPES[s.work_type]||s.work_type}</span>${s.sector?` · ${this.esc(s.sector)}`:''} · Updated ${this.ago(s.updated_at)}${s.attachments?.length?` · <i class="bi bi-paperclip"></i> ${s.attachments.length}`:''}</div></div><div class="d-flex gap-2 flex-wrap align-items-center"><span class="badge-status status-${s.status}">${s.status}</span>${s.status==='draft'?`<button class="btn btn-sm btn-outline-danger py-0" onclick="event.stopPropagation();App.deleteDraft('${s._docId}')" title="Delete draft"><i class="bi bi-trash"></i></button>`:''}${s.status==='draft'||s.edit_permission?`<span class="badge bg-primary">✏️ Editable</span>`:`<span class="badge bg-secondary"><i class="bi bi-lock"></i> Locked</span>`}</div></div>`).join(''):`<div class="empty-state"><i class="bi bi-journal-x"></i><h6>No submissions here</h6><a href="#new-submission" class="btn btn-primary btn-sm mt-2">Create submission</a></div>`}
       </div></div>
     </div>`;
+  },
+
+  async deleteDraft(id){
+    if(!this.requireAuth()) return;
+    const sub = this.submissions.find(s=>s._docId===id);
+    if(!sub) return;
+    if(sub.status !== 'draft') return this.toast('Only drafts can be deleted.','danger');
+    if(sub.user_id !== this.currentUser._docId) return this.toast('You can only delete your own drafts.','danger');
+    if(!confirm(`Delete draft "${sub.title}"?\n\nThis cannot be undone.`)) return;
+    try {
+      if(sub.attachments?.length){
+        for(const a of sub.attachments){ if(a.storagePath) await Cloud.deleteStorageFile(a.storagePath); }
+      }
+      await Cloud.deleteSubmission(id);
+      await this.log('draft.delete', `Deleted draft: ${sub.title}`);
+      this.submissions = this.submissions.filter(x => x._docId !== id);
+      this.toast('✓ Draft deleted.','success');
+      this.route();
+    } catch(e){ this.toast('Delete failed: '+e.message,'danger'); }
   },
 
   pageSubmissionForm(editId){
@@ -626,7 +663,7 @@ const App = {
       if(!existing){ this.toast('Not found.','danger'); return this.go('dashboard'); }
       const canEdit = existing.status === 'draft' || existing.edit_permission === true;
       if(!canEdit){ this.toast('Only drafts or founder-approved edits can be edited.','warning'); return this.go('view-submission/'+editId); }
-      this._pendingFiles = existing.attachments ? [...existing.attachments] : [];
+      this._pendingFiles = existing.attachments ? existing.attachments.map(a => ({ ...a })) : [];
     } else this._pendingFiles = [];
     document.getElementById('app').innerHTML = `
     <div class="container py-5">
@@ -652,14 +689,15 @@ const App = {
           </div></div>
           <div class="card mb-3"><div class="card-body">
             <h6 class="mb-1"><i class="bi bi-paperclip"></i> Attachments</h6>
-            <p class="small mb-3" style="color:var(--ts-muted);">PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, JPG, PNG, WEBP · <strong>No size limit</strong> (up to Firebase Storage 5 GB)</p>
-            <div class="file-drop" onclick="document.getElementById('fileInput').click()"><i class="bi bi-cloud-upload"></i><div class="fw-semibold mt-2">Click to upload</div><div class="small" style="color:var(--ts-muted);">Upload any size</div><input type="file" id="fileInput" hidden multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.jpg,.jpeg,.png,.webp,.gif" onchange="App.handleFilesPick(this)"></div>
+            <p class="small mb-3" style="color:var(--ts-muted);">PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, JPG, PNG, WEBP · <strong>Up to 200 MB per file</strong></p>
+            <div class="file-drop" onclick="document.getElementById('fileInput').click()"><i class="bi bi-cloud-upload"></i><div class="fw-semibold mt-2">Click to upload</div><div class="small" style="color:var(--ts-muted);">PDFs, docs, images</div><input type="file" id="fileInput" hidden multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.jpg,.jpeg,.png,.webp,.gif" onchange="App.handleFilesPick(this)"></div>
             <div id="fileList" class="mt-3"></div>
           </div></div>
         </div>
         <div class="col-lg-4"><div class="card" style="position:sticky;top:90px;"><div class="card-body d-grid gap-2">
-          <button name="action" value="save" class="btn btn-outline-primary"><i class="bi bi-save"></i> Save Draft</button>
-          <button name="action" value="submit" class="btn btn-primary" onclick="return confirm('Submit for founder review?');"><i class="bi bi-send-fill"></i> Submit for Review</button>
+          <button name="action" value="save" class="btn btn-outline-primary" id="saveDraftBtn"><i class="bi bi-save"></i> Save Draft</button>
+          <button name="action" value="submit" class="btn btn-primary" id="submitBtn"><i class="bi bi-send-fill"></i> Submit for Review</button>
+          <p class="small mb-0 mt-2" style="color:var(--ts-muted);">Drafts can be deleted by you. After submission, only the founder can edit or delete.</p>
         </div></div></div>
       </form>
     </div>`;
@@ -669,10 +707,10 @@ const App = {
   async handleFilesPick(input){
     const files = Array.from(input.files||[]);
     for(const f of files){
-      if(f.size > MAX_FILE_SIZE){ this.toast(`"${f.name}" too big (max 100 MB).`,'danger'); continue; }
+      if(f.size > MAX_FILE_SIZE){ this.toast(`"${f.name}" too big (max 200 MB).`,'danger'); continue; }
       const ok = ALLOWED_TYPES.includes(f.type) || /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|jpe?g|png|webp|gif)$/i.test(f.name);
       if(!ok){ this.toast(`File type not allowed: ${f.name}`,'danger'); continue; }
-      this._pendingFiles.push({ name: f.name, type: f.type || 'application/octet-stream', size: f.size, _file: f, _progress: 0 });
+      this._pendingFiles.push({ name: f.name, type: f.type || 'application/octet-stream', size: f.size, _file: f, _progress: 0, _uploading: false });
     }
     input.value = '';
     this.renderPendingFiles();
@@ -681,8 +719,12 @@ const App = {
   renderPendingFiles(){
     const el = document.getElementById('fileList'); if(!el) return;
     if(!this._pendingFiles.length){ el.innerHTML=''; return; }
-    el.innerHTML = this._pendingFiles.map((f,i)=>`<div class="file-preview"><i class="bi ${Utils.fileIcon(f.type,f.name)} file-ic"></i><div class="file-info"><div class="file-name">${this.esc(f.name)}</div><div class="file-meta">${Utils.fmtBytes(f.size)}${f.url?' · <span class="text-success">✓ uploaded</span>':''}</div></div><div class="file-actions"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.previewPending(${i})"><i class="bi bi-eye"></i></button><button type="button" class="btn btn-sm btn-outline-danger" onclick="App.removeFile(${i})"><i class="bi bi-x-lg"></i></button></div></div>`).join('');
+    el.innerHTML = this._pendingFiles.map((f,i)=>{
+      const status = f.url ? '<span class="text-success">✓ ready</span>' : (f._uploading ? `<span class="text-info">Uploading ${f._progress||0}%</span>` : '<span style="color:var(--ts-muted);">Pending</span>');
+      return `<div class="file-preview"><i class="bi ${Utils.fileIcon(f.type,f.name)} file-ic"></i><div class="file-info"><div class="file-name">${this.esc(f.name)}</div><div class="file-meta">${Utils.fmtBytes(f.size)} · ${status}</div>${f._uploading?`<div class="upload-progress"><div class="upload-progress-bar" style="width:${f._progress||0}%"></div></div>`:''}</div><div class="file-actions"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.previewPending(${i})"><i class="bi bi-eye"></i></button><button type="button" class="btn btn-sm btn-outline-danger" onclick="App.removeFile(${i})"><i class="bi bi-x-lg"></i></button></div></div>`;
+    }).join('');
   },
+
   previewPending(i){
     const f = this._pendingFiles[i]; if(!f) return;
     if(f.url){ this.openPreview(f.name, f.type, f.url); return; }
@@ -698,33 +740,53 @@ const App = {
     const data = { title:(fd.get('title')||'').trim(), work_type:fd.get('work_type')||'', sector:fd.get('sector')||'', problem:(fd.get('problem')||'').trim(), research:(fd.get('research')||'').trim(), findings:(fd.get('findings')||'').trim(), solution:(fd.get('solution')||'').trim() };
     if(!data.title||!data.work_type||!data.problem) return this.toast('Title, type and problem required.','danger');
     const action = e.submitter?.value || 'save';
-    const btn = e.submitter;
-    if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…'; }
+    const saveBtn = document.getElementById('saveDraftBtn');
+    const submitBtn = document.getElementById('submitBtn');
+    if(saveBtn) saveBtn.disabled = true;
+    if(submitBtn) submitBtn.disabled = true;
+    const activeBtn = action === 'submit' ? submitBtn : saveBtn;
+    if(activeBtn) activeBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…';
 
     try {
       let subId;
-      const meta = { ...data, status: action==='submit' ? 'submitted' : 'draft', edit_permission: false, submitted_at: action==='submit' ? this.now() : null, attachments: [] };
+      const meta = { ...data, status: action==='submit' ? 'submitted' : 'draft', edit_permission: false, submitted_at: action==='submit' ? this.now() : null };
       if(editId){
         const existing = this.submissions.find(s => s._docId === editId);
         if(!existing) throw new Error('Submission not found');
         await Cloud.updateSubmission(editId, meta);
         subId = editId;
       } else {
-        subId = await Cloud.createSubmission({ ...meta, user_id: u._docId });
+        subId = await Cloud.createSubmission({ ...meta, attachments: [], user_id: u._docId });
       }
 
-      this.toast('Uploading files…','info',3000);
+      if(!storage){
+        this.toast('⚠️ Firebase Storage not enabled. Files will not be uploaded. Enable it in Firebase Console.','danger',8000);
+      }
+
       const uploadedFiles = [];
       for(let i = 0; i < this._pendingFiles.length; i++){
         const pf = this._pendingFiles[i];
         if(pf.url){ uploadedFiles.push({ name: pf.name, type: pf.type, size: pf.size, url: pf.url, storagePath: pf.storagePath }); continue; }
         if(pf._file){
+          pf._uploading = true; pf._progress = 0;
+          this.renderPendingFiles();
           try {
-            const result = await Cloud.uploadFile(subId, pf._file);
+            const result = await Cloud.uploadFile(subId, pf._file, (p) => {
+              const f = this._pendingFiles[i]; if(f){ f._progress = p; this.renderPendingFiles(); }
+            });
+            pf._uploading = false; pf._progress = 100;
+            pf.url = result.url; pf.storagePath = result.storagePath;
             uploadedFiles.push({ name: pf.name, type: pf.type, size: pf.size, url: result.url, storagePath: result.storagePath });
+            this.renderPendingFiles();
           } catch(err){
+            pf._uploading = false;
             console.error('Upload failed:', err);
-            this.toast(`Upload failed for ${pf.name}: ${err.message}`, 'danger', 6000);
+            this.toast(`⚠️ Upload failed for "${pf.name}": ${err.message}`, 'danger', 8000);
+            this.renderPendingFiles();
+            if(saveBtn) saveBtn.disabled = false;
+            if(submitBtn) submitBtn.disabled = false;
+            if(activeBtn) activeBtn.innerHTML = action === 'submit' ? '<i class="bi bi-send-fill"></i> Submit for Review' : '<i class="bi bi-save"></i> Save Draft';
+            return;
           }
         }
       }
@@ -746,7 +808,9 @@ const App = {
     } catch(err){
       console.error(err);
       this.toast('Save failed: ' + err.message, 'danger', 6000);
-      if(btn){ btn.disabled = false; btn.innerHTML = 'Save'; }
+      if(saveBtn) saveBtn.disabled = false;
+      if(submitBtn) submitBtn.disabled = false;
+      if(activeBtn) activeBtn.innerHTML = action === 'submit' ? '<i class="bi bi-send-fill"></i> Submit for Review' : '<i class="bi bi-save"></i> Save Draft';
     }
   },
 
@@ -762,6 +826,7 @@ const App = {
     const versions = await Cloud.getVersions(id);
     const canEdit = isOwner && (sub.status === 'draft' || sub.edit_permission === true);
     const canDeleteFiles = canEdit || isFounder;
+    const canDeleteThis = isFounder || (isOwner && sub.status === 'draft');
     document.getElementById('app').innerHTML = `
     <div class="container py-5">
       <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
@@ -778,6 +843,7 @@ const App = {
         <div class="d-flex gap-2 flex-wrap">
           <a href="#${isFounder?'admin-submissions':'dashboard'}" class="btn btn-outline-secondary btn-sm">Back</a>
           ${canEdit?`<a href="#edit-submission/${id}" class="btn btn-primary btn-sm"><i class="bi bi-pencil"></i> Continue Editing</a>`:''}
+          ${canDeleteThis?`<button class="btn btn-outline-danger btn-sm" onclick="App.deleteSubmission('${id}')"><i class="bi bi-trash"></i> Delete</button>`:''}
         </div>
       </div>
       ${isFounder?`<div class="card mb-3"><div class="card-body">
@@ -785,14 +851,13 @@ const App = {
         <div class="d-flex gap-2 flex-wrap align-items-center">
           ${['submitted','under_review'].includes(sub.status)?`<button class="btn btn-success btn-sm" onclick="App.founderSubmissionAction('${id}','approve')"><i class="bi bi-check-circle-fill"></i> Approve</button>`:''}
           ${sub.status!=='archived'?`<button class="btn btn-outline-secondary btn-sm" onclick="App.founderSubmissionAction('${id}','archive')"><i class="bi bi-archive-fill"></i> Archive</button>`:`<button class="btn btn-outline-success btn-sm" onclick="App.founderSubmissionAction('${id}','restore')"><i class="bi bi-arrow-counterclockwise"></i> Restore</button>`}
-          <button class="btn btn-outline-danger btn-sm" onclick="App.deleteSubmission('${id}')"><i class="bi bi-trash"></i> Delete</button>
           <div class="form-check form-switch ms-2">
             <input class="form-check-input" type="checkbox" id="permToggle" ${sub.edit_permission?'checked':''} onchange="App.toggleEditPermission('${id}', this.checked)">
             <label class="form-check-label small" for="permToggle">Allow author to edit</label>
           </div>
         </div>
       </div></div>`:''}
-      ${isOwner && (sub.status==='draft'||sub.edit_permission)?`<div class="alert alert-info small"><i class="bi bi-unlock-fill"></i> ${sub.edit_permission?`<strong>Founder has given you permission to edit.</strong>`:`This is a draft.`}</div>`:isOwner?`<div class="alert alert-warning small"><i class="bi bi-lock-fill"></i> This submission is <strong>${sub.status}</strong>. <strong>You can't edit or delete without Founder permission.</strong></div>`:''}
+      ${isOwner && (sub.status==='draft'||sub.edit_permission)?`<div class="alert alert-info small"><i class="bi bi-unlock-fill"></i> ${sub.edit_permission?`<strong>Founder has given you permission to edit.</strong>`:`This is a draft. You can edit or delete this submission.`}</div>`:isOwner?`<div class="alert alert-warning small"><i class="bi bi-lock-fill"></i> This submission is <strong>${sub.status}</strong>. <strong>You can't edit or delete without Founder permission.</strong></div>`:''}
       <div class="row g-4">
         <div class="col-lg-8">
           ${[['Problem',sub.problem],['Research',sub.research],['Findings',sub.findings],['Possible Solution',sub.solution]].filter(([_,c])=>c).map(([l,c])=>`<div class="card mb-3"><div class="card-body"><h6 class="text-primary mb-3">${l}</h6><div style="white-space:pre-wrap;line-height:1.7;">${this.esc(c)}</div></div></div>`).join('')}
@@ -810,9 +875,14 @@ const App = {
   },
 
   async deleteSubmission(id){
-    if(!this.requireFounder()) return;
+    if(!this.currentUser) return;
     const sub = this.submissions.find(s=>s._docId===id);
     if(!sub) return;
+    const isFounder = this.currentUser.role === 'founder';
+    const isOwner = sub.user_id === this.currentUser._docId;
+    if(!isFounder && !(isOwner && sub.status === 'draft')){
+      return this.toast('Only drafts can be deleted by members.','danger');
+    }
     if(!confirm(`⚠️ PERMANENTLY DELETE "${sub.title}"?\n\nThis cannot be undone.`)) return;
     if(!confirm(`🚨 FINAL WARNING\n\nAll data and files for this submission will be deleted forever.`)) return;
     try {
@@ -823,7 +893,7 @@ const App = {
       await this.log('submission.delete', `Permanently deleted: ${sub.title}`);
       this.submissions = this.submissions.filter(x => x._docId !== id);
       this.toast('✓ Submission permanently deleted.','success');
-      this.go('admin-submissions');
+      this.go(isFounder ? 'admin-submissions' : 'my-submissions/all');
     } catch(e){ this.toast('Delete failed: '+e.message,'danger'); }
   },
 
@@ -1286,7 +1356,7 @@ const App = {
   },
 
   page404(){
-    document.getElementById('app').innerHTML = `<div class="container py-5 text-center"><h1 class="display-1">404</h1><a href="#home" class="btn btn-primary">Go Home</a></div>`;
+    document.getElementById('app').innerHTML = `<div class="container py-5 text-center"><h1 class="display-1">404</h1><p style="color:var(--ts-muted);">Page not found</p><a href="#home" class="btn btn-primary">Go Home</a></div>`;
   }
 };
 
