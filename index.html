@@ -99,6 +99,18 @@ body{background:var(--ts-bg);min-height:100vh;color:var(--ts-text);transition:ba
 .loader-ring{width:56px;height:56px;border:4px solid var(--ts-border);border-top-color:var(--ts-primary);border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .cloud-badge{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .65rem;border-radius:100px;background:rgba(52,211,153,.15);color:#34d399;font-size:.7rem;font-weight:600;}
+.table-row-clickable{cursor:pointer;transition:background .15s;}
+.table-row-clickable:hover{background:rgba(124,92,255,.08)!important;}
+.sidebar-backdrop{display:none;}
+.sidebar-hamburger{display:none;}
+@media (max-width: 991.98px) {
+  .sidebar{position:fixed!important;left:0;top:64px;bottom:0;width:260px;z-index:1050;transform:translateX(-100%);transition:transform .25s ease;overflow-y:auto;box-shadow:4px 0 20px rgba(0,0,0,.4);}
+  .sidebar.open{transform:translateX(0);}
+  .sidebar-backdrop{position:fixed;inset:64px 0 0 0;background:rgba(0,0,0,.5);z-index:1040;display:none;}
+  .sidebar-backdrop.open{display:block;}
+  .sidebar-hamburger{display:inline-flex;position:fixed;bottom:1rem;right:1rem;z-index:1060;width:52px;height:52px;border-radius:50%;background:var(--ts-primary);color:#fff;align-items:center;justify-content:center;font-size:1.4rem;border:0;box-shadow:0 6px 20px rgba(124,92,255,.5);}
+  .sidebar-hamburger:active{transform:scale(.95);}
+}
 </style>
 </head>
 <body>
@@ -154,10 +166,8 @@ body{background:var(--ts-bg);min-height:100vh;color:var(--ts-text);transition:ba
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
 <script>
-/* ============================================================
-   Firebase Configuration — paste your own config here
-   ============================================================ */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyArc1aFKbQ2POWEdYoxt_yvnq_vS4_Ep0U",
   authDomain: "team-shadow-95e94.firebaseapp.com",
@@ -166,117 +176,84 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "1057812105084",
   appId: "1:1057812105084:web:ca1fd83820c16bb8bb46f9"
 };
-/* ============================================================ */
 
-const APP_VERSION = 'v7.0-cloud';
-const FOUNDER_CODE = 'MOIN-SHADOW-2026';
+const APP_VERSION = 'v9.0-cloud';
 const SECTORS = ['AI & Software','Cybersecurity','Healthcare','Biotechnology','Agriculture','Energy','Climate & Environment','Water & Waste','Finance / FinTech','Business','Education','Manufacturing','Robotics','Logistics','Transportation','Daily-Life Problems','Other'];
 const WORK_TYPES = {problem_discovery:'Problem Discovery',problem_research:'Problem Research',market_research:'Market Research',customer_research:'Customer Research',competitor_research:'Competitor Research',solution_research:'Solution Research',validation:'Validation',experiment:'Experiment',project_update:'Project Update',other:'Other'};
-const MAX_FILE_SIZE = 1.5*1024*1024, MAX_AVATAR_SIZE = 5*1024*1024;
+const MAX_FILE_SIZE = 100*1024*1024;
+const MAX_AVATAR_SIZE = 5*1024*1024;
 const ALLOWED_TYPES = ['application/pdf','application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation','text/plain','image/jpeg','image/png','image/webp','image/gif'];
 
-let fb = null, fsdb = null;
+let fb = null, fsdb = null, storage = null;
 try {
   firebase.initializeApp(FIREBASE_CONFIG);
   fb = firebase;
   fsdb = firebase.firestore();
   fsdb.settings({ merge: true });
-} catch(e) {
-  console.error('Firebase init error:', e);
-}
+  try { storage = firebase.storage(); } catch(e){ console.warn('Storage not enabled:', e); }
+} catch(e) { console.error('Firebase init error:', e); }
 
 const Cloud = {
   ready(){ return fsdb !== null && !FIREBASE_CONFIG.apiKey.includes('YOUR_') },
-  async getUsers(){
-    const s = await fsdb.collection('users').get();
-    return s.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  async getUsers(){ const s = await fsdb.collection('users').get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })); },
+  async getUserById(id){ const d = await fsdb.collection('users').doc(String(id)).get(); return d.exists ? { ...d.data(), _docId: d.id } : null; },
+  async getUserByEmail(email){ const s = await fsdb.collection('users').where('email','==',email.toLowerCase()).limit(1).get(); if(s.empty) return null; const d = s.docs[0]; return { ...d.data(), _docId: d.id }; },
+  async createUser(user){ const ref = fsdb.collection('users').doc(); await ref.set({ ...user, _id: ref.id, created_at: new Date().toISOString() }); return ref.id; },
+  async updateUser(docId, patch){ await fsdb.collection('users').doc(docId).update(patch); },
+  async deleteUser(docId){ await fsdb.collection('users').doc(docId).delete(); },
+  async getSubmissions(){ const s = await fsdb.collection('submissions').orderBy('created_at','desc').get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })); },
+  async createSubmission(sub){ const ref = fsdb.collection('submissions').doc(); await ref.set({ ...sub, _id: ref.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }); return ref.id; },
+  async updateSubmission(docId, patch){ await fsdb.collection('submissions').doc(docId).update({ ...patch, updated_at: new Date().toISOString() }); },
+  async deleteSubmission(docId){ await fsdb.collection('submissions').doc(docId).delete(); },
+  async getVersions(subId){ const s = await fsdb.collection('versions').where('submission_id','==',subId).get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })).sort((a,b)=>(b.version||0)-(a.version||0)); },
+  async addVersion(v){ const ref = fsdb.collection('versions').doc(); await ref.set({ ...v, _id: ref.id, created_at: new Date().toISOString() }); },
+  async getNotifications(userId){ const s = await fsdb.collection('notifications').where('user_id','==',userId).get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })).sort((a,b)=> new Date(b.created_at) - new Date(a.created_at)); },
+  async addNotification(n){ const ref = fsdb.collection('notifications').doc(); await ref.set({ ...n, _id: ref.id, is_read: false, created_at: new Date().toISOString() }); },
+  async updateNotification(docId, patch){ await fsdb.collection('notifications').doc(docId).update(patch); },
+  async getActivity(){ const s = await fsdb.collection('activity').orderBy('created_at','desc').limit(500).get(); return s.docs.map(d => ({ ...d.data(), _docId: d.id })); },
+  async addActivity(a){ const ref = fsdb.collection('activity').doc(); await ref.set({ ...a, _id: ref.id, created_at: new Date().toISOString() }); },
+  async uploadFile(submissionId, file, onProgress){
+    if(!storage) throw new Error('Firebase Storage not enabled. Enable it in Firebase Console.');
+    const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+    const safeExt = ext.replace(/[^a-z0-9]/g,'').slice(0,10) || 'bin';
+    const path = `submissions/${submissionId}/${Date.now()}_${Math.random().toString(36).slice(2,10)}.${safeExt}`;
+    const ref = storage.ref().child(path);
+    const task = ref.put(file, { contentType: file.type || 'application/octet-stream' });
+    if(onProgress && typeof task.on === 'function'){
+      task.on('state_changed', s => { try { onProgress((s.bytesTransferred / s.totalBytes) * 100); } catch(e){} });
+    }
+    await task;
+    const url = await ref.getDownloadURL();
+    return { url, storagePath: path };
   },
-  async getUserById(id){
-    const d = await fsdb.collection('users').doc(String(id)).get();
-    return d.exists ? { ...d.data(), _docId: d.id } : null;
-  },
-  async getUserByEmail(email){
-    const s = await fsdb.collection('users').where('email','==',email.toLowerCase()).limit(1).get();
-    if(s.empty) return null;
-    const d = s.docs[0];
-    return { ...d.data(), _docId: d.id };
-  },
-  async createUser(user){
-    const ref = fsdb.collection('users').doc();
-    await ref.set({ ...user, _id: ref.id, created_at: new Date().toISOString() });
-    return ref.id;
-  },
-  async updateUser(docId, patch){
-    await fsdb.collection('users').doc(docId).update(patch);
-  },
-  async getSubmissions(){
-    const s = await fsdb.collection('submissions').orderBy('created_at','desc').get();
-    return s.docs.map(d => ({ ...d.data(), _docId: d.id }));
-  },
-  async createSubmission(sub){
-    const ref = fsdb.collection('submissions').doc();
-    await ref.set({ ...sub, _id: ref.id, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-    return ref.id;
-  },
-  async updateSubmission(docId, patch){
-    await fsdb.collection('submissions').doc(docId).update({ ...patch, updated_at: new Date().toISOString() });
-  },
-  async getVersions(subId){
-    const s = await fsdb.collection('versions').where('submission_id','==',subId).get();
-    return s.docs.map(d => ({ ...d.data(), _docId: d.id })).sort((a,b)=>(b.version||0)-(a.version||0));
-  },
-  async addVersion(v){
-    const ref = fsdb.collection('versions').doc();
-    await ref.set({ ...v, _id: ref.id, created_at: new Date().toISOString() });
-  },
-  async getNotifications(userId){
-    const s = await fsdb.collection('notifications').where('user_id','==',userId).get();
-    return s.docs.map(d => ({ ...d.data(), _docId: d.id })).sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
-  },
-  async addNotification(n){
-    const ref = fsdb.collection('notifications').doc();
-    await ref.set({ ...n, _id: ref.id, is_read: false, created_at: new Date().toISOString() });
-  },
-  async updateNotification(docId, patch){
-    await fsdb.collection('notifications').doc(docId).update(patch);
-  },
-  async getActivity(){
-    const s = await fsdb.collection('activity').orderBy('created_at','desc').limit(500).get();
-    return s.docs.map(d => ({ ...d.data(), _docId: d.id }));
-  },
-  async addActivity(a){
-    const ref = fsdb.collection('activity').doc();
-    await ref.set({ ...a, _id: ref.id, created_at: new Date().toISOString() });
+  async deleteStorageFile(storagePath){
+    if(!storage) return;
+    try { await storage.ref(storagePath).delete(); } catch(e){ console.warn('Storage delete failed:', e); }
   }
 };
 
 const Utils = {
-  fmtBytes(b){if(!b)return '0 B';if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';return (b/1048576).toFixed(2)+' MB'},
-  readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error('read failed'));r.readAsDataURL(f)})},
-  async compressImage(file,maxSize=320,quality=0.82){const d=await this.readAsDataURL(file);return new Promise(resolve=>{const img=new Image();img.onload=()=>{let{width,height}=img;if(width>height){if(width>maxSize){height*=maxSize/width;width=maxSize}}else{if(height>maxSize){width*=maxSize/height;height=maxSize}}const c=document.createElement('canvas');c.width=Math.round(width);c.height=Math.round(height);c.getContext('2d').drawImage(img,0,0,c.width,c.height);resolve(c.toDataURL('image/jpeg',quality))};img.onerror=()=>resolve(d);img.src=d})},
-  fileIcon(t,n=''){const s=(t||'')+' '+(n||'').toLowerCase();if(s.includes('pdf'))return 'bi-file-earmark-pdf text-danger';if(s.startsWith('image')||/\.(jpe?g|png|webp|gif)$/i.test(n))return 'bi-file-earmark-image text-info';if(s.includes('word')||/\.docx?$/i.test(n))return 'bi-file-earmark-word text-primary';if(s.includes('sheet')||s.includes('excel')||/\.xlsx?$/i.test(n))return 'bi-file-earmark-spreadsheet text-success';if(s.includes('presentation')||s.includes('powerpoint')||/\.pptx?$/i.test(n))return 'bi-file-earmark-slides text-warning';if(s==='text/plain'||/\.txt$/i.test(n))return 'bi-file-earmark-text';return 'bi-file-earmark'},
-  isPDF(f){return (f.type||'').includes('pdf')||/\.pdf$/i.test(f.name||'')},
-  isImage(f){return (f.type||'').startsWith('image/')||/\.(jpe?g|png|webp|gif)$/i.test(f.name||'')},
-  escape(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+  fmtBytes(b){ if(!b && b !== 0) return '0 B'; if(b<1024) return b+' B'; if(b<1048576) return (b/1024).toFixed(1)+' KB'; if(b<1073741824) return (b/1048576).toFixed(2)+' MB'; return (b/1073741824).toFixed(2)+' GB'; },
+  readAsDataURL(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(new Error('read failed')); r.readAsDataURL(f); }); },
+  async compressImage(file,maxSize=320,quality=0.82){ const d=await this.readAsDataURL(file); return new Promise(resolve=>{ const img=new Image(); img.onload=()=>{ let{width,height}=img; if(width>height){ if(width>maxSize){ height*=maxSize/width; width=maxSize; } } else { if(height>maxSize){ width*=maxSize/height; height=maxSize; } } const c=document.createElement('canvas'); c.width=Math.round(width); c.height=Math.round(height); c.getContext('2d').drawImage(img,0,0,c.width,c.height); resolve(c.toDataURL('image/jpeg',quality)); }; img.onerror=()=>resolve(d); img.src=d; }); },
+  fileIcon(t,n=''){ const s=(t||'')+' '+(n||'').toLowerCase(); if(s.includes('pdf')) return 'bi-file-earmark-pdf text-danger'; if(s.startsWith('image')||/\.(jpe?g|png|webp|gif)$/i.test(n)) return 'bi-file-earmark-image text-info'; if(s.includes('word')||/\.docx?$/i.test(n)) return 'bi-file-earmark-word text-primary'; if(s.includes('sheet')||s.includes('excel')||/\.xlsx?$/i.test(n)) return 'bi-file-earmark-spreadsheet text-success'; if(s.includes('presentation')||s.includes('powerpoint')||/\.pptx?$/i.test(n)) return 'bi-file-earmark-slides text-warning'; if(s==='text/plain'||/\.txt$/i.test(n)) return 'bi-file-earmark-text'; return 'bi-file-earmark'; },
+  isPDF(f){ return (f.type||'').includes('pdf') || /\.pdf$/i.test(f.name||''); },
+  isImage(f){ return (f.type||'').startsWith('image/') || /\.(jpe?g|png|webp|gif)$/i.test(f.name||''); },
+  escape(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 };
 
 const App = {
-  currentUser:null, currentRoute:'', _pendingAvatar:null, _pendingFiles:[],
+  currentUser:null, currentRoute:'', _pendingAvatar:null, _pendingFiles:[], _adminSubSector:'all',
   users:[], submissions:[], notifications:[], activity:[],
+  _themeModes:['dark','light','system'], _themeIcons:{dark:'bi-moon-stars-fill',light:'bi-sun-fill',system:'bi-circle-half'},
 
   async init(){
+    this.applyStoredTheme();
     if(!Cloud.ready()){
-      document.getElementById('loadingOverlay').innerHTML = `
-        <div class="card" style="max-width:600px;padding:2rem;">
-          <h4 class="text-danger"><i class="bi bi-exclamation-triangle-fill"></i> Firebase Config Missing</h4>
-          <p class="mt-3">You haven't set your Firebase config. Paste your keys inside <code>FIREBASE_CONFIG</code> in the HTML file.</p>
-          <p class="small" style="color:var(--ts-muted);">Setup takes about 5 minutes.</p>
-        </div>`;
+      document.getElementById('loadingOverlay').innerHTML = `<div class="card" style="max-width:600px;padding:2rem;"><h4 class="text-danger"><i class="bi bi-exclamation-triangle-fill"></i> Firebase Config Missing</h4><p class="mt-3">Paste your keys inside <code>FIREBASE_CONFIG</code>.</p></div>`;
       return;
     }
-
     document.getElementById('year').textContent = new Date().getFullYear();
-
     try {
       await this.refreshAll();
       const sessionEmail = localStorage.getItem('ts_session_email');
@@ -285,34 +262,49 @@ const App = {
         if(u && u.status === 'active') this.currentUser = u;
         else localStorage.removeItem('ts_session_email');
       }
-    } catch(e){
-      console.error('Initial load error:', e);
-      this.toast('Cloud connection failed: ' + e.message, 'danger', 8000);
-    }
-
+    } catch(e){ console.error('Initial load error:', e); this.toast('Cloud connection failed: ' + e.message, 'danger', 8000); }
     document.getElementById('loadingOverlay').classList.add('hidden');
     window.addEventListener('hashchange',()=>this.route());
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if(this.getThemeMode() === 'system') this.applyTheme('system'); });
     this.route();
+  },
+
+  getThemeMode(){ return localStorage.getItem('ts_theme') || 'dark'; },
+  applyStoredTheme(){ this.applyTheme(this.getThemeMode()); },
+  applyTheme(mode){
+    if(mode === 'system'){
+      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.setAttribute('data-bs-theme', isDark ? 'dark' : 'light');
+    } else {
+      document.documentElement.setAttribute('data-bs-theme', mode);
+    }
+    localStorage.setItem('ts_theme', mode);
+    this.updateThemeIcon();
+  },
+  updateThemeIcon(){
+    const btn = document.getElementById('themeToggleBtn');
+    if(btn){ const i = btn.querySelector('i'); if(i) i.className = 'bi ' + this._themeIcons[this.getThemeMode()]; }
+  },
+  cycleTheme(){
+    const cur = this.getThemeMode();
+    const idx = this._themeModes.indexOf(cur);
+    const next = this._themeModes[(idx + 1) % this._themeModes.length];
+    this.applyTheme(next);
+    this.toast(`Theme: ${next.charAt(0).toUpperCase()+next.slice(1)}`, 'info', 1800);
+    this.renderNav();
   },
 
   async refreshAll(){
     try {
       [this.users, this.submissions, this.notifications, this.activity] = await Promise.all([
-        Cloud.getUsers(),
-        Cloud.getSubmissions(),
+        Cloud.getUsers(), Cloud.getSubmissions(),
         this.currentUser ? Cloud.getNotifications(String(this.currentUser._docId)) : Promise.resolve([]),
         Cloud.getActivity()
       ]);
     } catch(e){ console.warn('refreshAll warn:', e); }
   },
 
-  async refreshUser(){
-    if(!this.currentUser) return;
-    try {
-      const fresh = await Cloud.getUserById(this.currentUser._docId);
-      if(fresh) this.currentUser = fresh;
-    } catch(e){}
-  },
+  async refreshUser(){ if(!this.currentUser) return; try { const fresh = await Cloud.getUserById(this.currentUser._docId); if(fresh) this.currentUser = fresh; } catch(e){} },
 
   route(){
     const hash = location.hash.slice(1)||'';
@@ -342,11 +334,11 @@ const App = {
         case 'admin-activity': this.pageAdminActivity(); break;
         default: this.page404();
       }
-    }catch(e){console.error('Route error:',e);this.toast('Something went wrong.','danger')}
+    }catch(e){ console.error('Route error:',e); this.toast('Something went wrong.','danger'); }
     window.scrollTo(0,0);
   },
 
-  go(path){ location.hash = path; },
+  go(path){ this.closeSidebar(); location.hash = path; },
 
   async logout(){
     if(this.currentUser) await this.log('logout',`User logged out: ${this.currentUser.email}`);
@@ -361,6 +353,7 @@ const App = {
     const el = document.getElementById('navLinks');
     if(!el) return;
     const u = this.currentUser;
+    const themeIcon = this._themeIcons[this.getThemeMode()] || 'bi-moon-stars';
     if(u){
       const isFounder = u.role === 'founder';
       const dashRoute = isFounder ? 'admin' : 'dashboard';
@@ -370,7 +363,7 @@ const App = {
         ${!isFounder?`<li class="nav-item"><a class="nav-link" href="#new-submission"><i class="bi bi-plus-lg"></i> New</a></li>`:''}
         <li class="nav-item"><a class="nav-link" href="#members"><i class="bi bi-people"></i> Members</a></li>
         <li class="nav-item"><a class="nav-link position-relative" href="#notifications"><i class="bi bi-bell${unread?'-fill':''}"></i>${unread?`<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:.6rem;">${unread}</span>`:''}</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" onclick="App.toggleTheme();return false;"><i class="bi bi-moon-stars"></i></a></li>
+        <li class="nav-item"><a class="nav-link" href="#" id="themeToggleBtn" onclick="App.cycleTheme();return false;" title="Cycle theme (Dark/Light/System)"><i class="bi ${themeIcon}"></i></a></li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle d-flex align-items-center gap-2" href="#" data-bs-toggle="dropdown">
             ${this.avatarHtml(u,'avatar-sm')}<span>${this.esc(u.full_name.split(' ')[0])}</span>
@@ -386,19 +379,20 @@ const App = {
     }else{
       el.innerHTML = `
         <li class="nav-item"><a class="nav-link" href="#home">Home</a></li>
-        <li class="nav-item"><a class="nav-link" href="#" onclick="App.toggleTheme();return false;"><i class="bi bi-moon-stars"></i></a></li>
+        <li class="nav-item"><a class="nav-link" href="#" id="themeToggleBtn" onclick="App.cycleTheme();return false;" title="Cycle theme"><i class="bi ${themeIcon}"></i></a></li>
         <li class="nav-item"><a class="nav-link" href="#login">Login</a></li>
         <li class="nav-item"><a class="btn btn-primary btn-sm px-3" href="#register">Join</a></li>`;
     }
   },
 
-  toggleTheme(){const c=document.documentElement.getAttribute('data-bs-theme');const n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-bs-theme',n);localStorage.setItem('ts_theme',n)},
-  esc(s){return Utils.escape(s)},
-  now(){return new Date().toISOString()},
-  ago(t){if(!t)return '—';const d=(Date.now()-new Date(t).getTime())/1000;if(d<60)return 'just now';if(d<3600)return Math.floor(d/60)+'m ago';if(d<86400)return Math.floor(d/3600)+'h ago';if(d<2592000)return Math.floor(d/86400)+'d ago';return new Date(t).toLocaleDateString()},
-  fmt(t){return t?new Date(t).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}):'—'},
+  toggleSidebar(){ const sb=document.getElementById('mainSidebar'); const bd=document.getElementById('sidebarBackdrop'); if(!sb) return; sb.classList.toggle('open'); if(bd) bd.classList.toggle('open'); },
+  closeSidebar(){ const sb=document.getElementById('mainSidebar'); const bd=document.getElementById('sidebarBackdrop'); if(sb) sb.classList.remove('open'); if(bd) bd.classList.remove('open'); },
+  esc(s){ return Utils.escape(s); },
+  now(){ return new Date().toISOString(); },
+  ago(t){ if(!t) return '—'; const d=(Date.now()-new Date(t).getTime())/1000; if(d<60) return 'just now'; if(d<3600) return Math.floor(d/60)+'m ago'; if(d<86400) return Math.floor(d/3600)+'h ago'; if(d<2592000) return Math.floor(d/86400)+'d ago'; return new Date(t).toLocaleDateString(); },
+  fmt(t){ return t?new Date(t).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}):'—'; },
   avatarHtml(user,sizeClass='avatar-md'){
-    if(user&&user.avatar)return `<img src="${user.avatar}" class="${sizeClass}" alt="">`;
+    if(user&&user.avatar) return `<img src="${user.avatar}" class="${sizeClass}" alt="">`;
     const initial = (user?.full_name||'?').charAt(0).toUpperCase();
     const px = sizeClass==='avatar-sm'?'36px':sizeClass==='avatar-lg'?'120px':'56px';
     const fs = sizeClass==='avatar-sm'?'.9rem':sizeClass==='avatar-lg'?'3rem':'1.3rem';
@@ -411,25 +405,16 @@ const App = {
     el.className = `ts-toast ${variant}`;
     el.innerHTML = `<i class="bi ${icons[variant]||icons.info} fs-5"></i><div class="flex-grow-1">${this.esc(msg)}</div>`;
     stack.appendChild(el);
-    setTimeout(()=>{el.style.opacity='0';el.style.transform='translateY(-10px)';setTimeout(()=>el.remove(),200)},duration);
+    setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateY(-10px)'; setTimeout(()=>el.remove(),200); }, duration);
   },
   async log(action,description){
-    try{
-      await Cloud.addActivity({ user_id: this.currentUser?._docId || null, user_name: this.currentUser?.full_name || 'Guest', action, description });
-      this.activity.unshift({ user_name: this.currentUser?.full_name || 'Guest', action, description, created_at: this.now() });
-      if(this.activity.length > 500) this.activity.pop();
-    }catch(e){console.warn('log error',e)}
+    try { await Cloud.addActivity({ user_id: this.currentUser?._docId || null, user_name: this.currentUser?.full_name || 'Guest', action, description }); this.activity.unshift({ user_name: this.currentUser?.full_name || 'Guest', action, description, created_at: this.now() }); if(this.activity.length > 500) this.activity.pop(); } catch(e){ console.warn('log error',e); }
   },
-  async notify(userId,title,message='',link=''){
-    try{ await Cloud.addNotification({ user_id: userId, title, message, link }); }catch(e){console.warn(e)}
-  },
-  async notifyFounders(title,message,link=''){
-    const founders = this.users.filter(u => u.role === 'founder' && u.status === 'active');
-    for(const f of founders) await this.notify(String(f._docId), title, message, link);
-  },
+  async notify(userId,title,message='',link=''){ try { await Cloud.addNotification({ user_id: userId, title, message, link }); } catch(e){ console.warn(e); } },
+  async notifyFounders(title,message,link=''){ const founders = this.users.filter(u => u.role === 'founder' && u.status === 'active'); for(const f of founders) await this.notify(String(f._docId), title, message, link); },
   unreadCount(){ if(!this.currentUser) return 0; return this.notifications.filter(n => !n.is_read).length; },
-  requireAuth(){if(!this.currentUser){this.toast('Please log in first.','warning');this.go('login');return false}return true},
-  requireFounder(){if(!this.requireAuth())return false;if(this.currentUser.role!=='founder'){this.toast('Founder access required.','danger');this.go('dashboard');return false}return true},
+  requireAuth(){ if(!this.currentUser){ this.toast('Please log in first.','warning'); this.go('login'); return false; } return true; },
+  requireFounder(){ if(!this.requireAuth()) return false; if(this.currentUser.role !== 'founder'){ this.toast('Founder access required.','danger'); this.go('dashboard'); return false; } return true; },
 
   pageHome(){
     const subs = this.submissions;
@@ -454,13 +439,13 @@ const App = {
   },
 
   pageRegister(){
-    if(this.currentUser)return this.go('dashboard');
-    this._pendingAvatar=null;
+    if(this.currentUser) return this.go('dashboard');
+    this._pendingAvatar = null;
     document.getElementById('app').innerHTML = `
     <div class="container py-5" style="max-width:620px;">
       <div class="card"><div class="card-body p-4">
         <h3 class="mb-1">Request Access</h3>
-        <p class="small mb-4" style="color:var(--ts-muted);">Join Team Shadow. Founder approval required for members.</p>
+        <p class="small mb-4" style="color:var(--ts-muted);">Join Team Shadow. Approval required for members.</p>
         <form onsubmit="App.doRegister(event)" autocomplete="off" id="regForm">
           <div class="text-center mb-4">
             <div id="avatarPreview">${this.avatarHtml({full_name:'?'},'avatar-lg')}</div>
@@ -479,7 +464,6 @@ const App = {
             <div class="col-md-6"><label class="form-label">Password * <span class="small" style="color:var(--ts-muted);">(min 8)</span></label><input type="password" name="password" class="form-control" required minlength="8" autocomplete="new-password"></div>
             <div class="col-md-6"><label class="form-label">Confirm *</label><input type="password" name="password_confirm" class="form-control" required autocomplete="new-password"></div>
           </div>
-          <div class="mb-3"><label class="form-label small">Founder Code <span style="color:var(--ts-muted);">(leave blank for member)</span></label><input name="founder_code" class="form-control form-control-sm" placeholder="optional" autocomplete="off"></div>
           <button class="btn btn-primary w-100 btn-lg" id="regBtn">Create Account</button>
         </form>
         <p class="text-center small mt-3 mb-0" style="color:var(--ts-muted);">Already registered? <a href="#login">Login</a></p>
@@ -492,64 +476,38 @@ const App = {
     if(!file.type.startsWith('image/')) return this.toast('Please pick an image file.','danger');
     if(file.size > MAX_AVATAR_SIZE) return this.toast('Image too big. Max 5 MB.','danger');
     this.toast('Processing photo…','info',1500);
-    try{const c=await Utils.compressImage(file,320,0.82);this._pendingAvatar=c;document.getElementById('avatarPreview').innerHTML=`<img src="${c}" class="avatar-lg">`}catch(e){this.toast('Could not process image.','danger')}
+    try { const c = await Utils.compressImage(file,320,0.82); this._pendingAvatar = c; document.getElementById('avatarPreview').innerHTML = `<img src="${c}" class="avatar-lg">`; } catch(e){ this.toast('Could not process image.','danger'); }
   },
 
   async doRegister(e){
     e.preventDefault();
-    const form = e.target;
-    const btn = document.getElementById('regBtn');
+    const form = e.target; const btn = document.getElementById('regBtn');
     const fd = new FormData(form);
     const name = (fd.get('full_name')||'').trim();
     const email = (fd.get('email')||'').trim().toLowerCase();
     const pass = (fd.get('password')||'').trim();
     const confirm = (fd.get('password_confirm')||'').trim();
-    const founderCode = (fd.get('founder_code')||'').trim();
     if(!name||name.length<3) return this.toast('Full name must be at least 3 characters.','danger');
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return this.toast('Valid email required.','danger');
     if(pass.length<8) return this.toast('Password must be at least 8 characters.','danger');
     if(pass!==confirm) return this.toast('Passwords do not match.','danger');
-
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating…';
-
     try {
       const existing = await Cloud.getUserByEmail(email);
-      if(existing){
-        btn.disabled = false; btn.innerHTML = 'Create Account';
-        return this.toast('This email is already registered. Please login.','danger',6000);
-      }
-      const isFounder = founderCode === FOUNDER_CODE;
-      await Cloud.createUser({
-        full_name: name, email, password: pass,
-        gender: fd.get('gender')||'prefer_not_to_say',
-        age: parseInt(fd.get('age'))||null,
-        sector: fd.get('sector')||'',
-        bio: (fd.get('bio')||'').trim(),
-        avatar: this._pendingAvatar||null,
-        role: isFounder?'founder':'member',
-        status: isFounder?'active':'pending',
-        last_login: null
-      });
-
+      if(existing){ btn.disabled = false; btn.innerHTML = 'Create Account'; return this.toast('This email is already registered. Please login.','danger',6000); }
+      const allUsers = await Cloud.getUsers();
+      const isFounder = allUsers.length === 0;
+      await Cloud.createUser({ full_name: name, email, password: pass, gender: fd.get('gender')||'prefer_not_to_say', age: parseInt(fd.get('age'))||null, sector: fd.get('sector')||'', bio: (fd.get('bio')||'').trim(), avatar: this._pendingAvatar||null, role: isFounder?'founder':'member', status: isFounder?'active':'pending', last_login: null });
       this.users = await Cloud.getUsers();
-
-      if(isFounder){
-        this.toast('✓ Founder account created! Login now.','success');
-      } else {
-        await this.notifyFounders('New member request', `${name} (${email}) requested access.`, 'admin-members');
-        this.toast('Account created. Waiting for founder approval.','info',6000);
-      }
+      if(isFounder){ this.toast('✓ Account created! You are the Founder. Login now.','success',6000); }
+      else { await this.notifyFounders('New member request', `${name} (${email}) requested access.`, 'admin-members'); this.toast('Account created. Waiting for approval.','info',6000); }
       this.go('login');
-    } catch(err){
-      console.error(err);
-      this.toast('Registration failed: ' + err.message, 'danger', 6000);
-      btn.disabled = false; btn.innerHTML = 'Create Account';
-    }
+    } catch(err){ console.error(err); this.toast('Registration failed: ' + err.message, 'danger', 6000); btn.disabled = false; btn.innerHTML = 'Create Account'; }
   },
 
   pageLogin(){
-    if(this.currentUser)return this.go(this.currentUser.role==='founder'?'admin':'dashboard');
+    if(this.currentUser) return this.go(this.currentUser.role==='founder'?'admin':'dashboard');
     document.getElementById('app').innerHTML = `
     <div class="container py-5" style="max-width:460px;">
       <div class="card"><div class="card-body p-4">
@@ -572,48 +530,24 @@ const App = {
     const fd = new FormData(e.target);
     const email = (fd.get('email')||'').trim().toLowerCase();
     const pass  = (fd.get('password')||'').trim();
-
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Signing in…';
-
     try {
       const user = await Cloud.getUserByEmail(email);
-      if(!user){
-        btn.disabled = false; btn.innerHTML = 'Sign In';
-        return this.toast('No account found with this email.','danger');
-      }
-      if(String(user.password||'').trim() !== pass){
-        btn.disabled = false; btn.innerHTML = 'Sign In';
-        return this.toast('Incorrect password.','danger');
-      }
-      if(user.status==='pending'){
-        btn.disabled = false; btn.innerHTML = 'Sign In';
-        return this.toast('Your account is awaiting founder approval.','warning',6000);
-      }
-      if(user.status==='suspended'){
-        btn.disabled = false; btn.innerHTML = 'Sign In';
-        return this.toast('Account suspended. Contact founder.','danger');
-      }
-      if(user.status==='deactivated'){
-        btn.disabled = false; btn.innerHTML = 'Sign In';
-        return this.toast('Account deactivated.','danger');
-      }
-
+      if(!user){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('No account found with this email.','danger'); }
+      if(String(user.password||'').trim() !== pass){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('Incorrect password.','danger'); }
+      if(user.status==='pending'){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('Your account is awaiting founder approval.','warning',6000); }
+      if(user.status==='suspended'){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('Account suspended. Contact founder.','danger'); }
+      if(user.status==='deactivated'){ btn.disabled = false; btn.innerHTML = 'Sign In'; return this.toast('Account deactivated.','danger'); }
       await Cloud.updateUser(user._docId, { last_login: this.now() });
       user.last_login = this.now();
-
       localStorage.setItem('ts_session_email', user.email);
       this.currentUser = user;
       this.notifications = await Cloud.getNotifications(String(user._docId));
-
       await this.log('login', `User logged in: ${email}`);
       this.toast(`✓ Welcome back, ${user.full_name}!`, 'success');
       this.go(user.role==='founder'?'admin':'dashboard');
-    } catch(err){
-      console.error(err);
-      this.toast('Login failed: ' + err.message, 'danger', 6000);
-      btn.disabled = false; btn.innerHTML = 'Sign In';
-    }
+    } catch(err){ console.error(err); this.toast('Login failed: ' + err.message, 'danger', 6000); btn.disabled = false; btn.innerHTML = 'Sign In'; }
   },
 
   pageDashboard(){
@@ -678,7 +612,7 @@ const App = {
         <a href="#my-submissions/submitted" class="btn btn-sm ${filter==='submitted'?'btn-info':'btn-outline-secondary'}">Submitted (${counts.submitted+counts.under_review+counts.approved})</a>
       </div></div>
       <div class="card"><div class="card-body">
-        ${subs.length?subs.map(s=>`<a href="#view-submission/${s._docId}" class="d-block text-decoration-none py-3 border-bottom" style="border-color:var(--ts-border)!important;color:inherit;"><div class="d-flex justify-content-between align-items-start gap-2 flex-wrap"><div class="flex-grow-1 min-w-0"><div class="fw-semibold fs-6">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);margin-top:.25rem;"><span class="badge-status" style="background:rgba(124,92,255,.15);color:var(--ts-primary-2);">${WORK_TYPES[s.work_type]||s.work_type}</span>${s.sector?` · ${this.esc(s.sector)}`:''} · Updated ${this.ago(s.updated_at)}${s.attachments?.length?` · <i class="bi bi-paperclip"></i> ${s.attachments.length}`:''}</div></div><div class="d-flex gap-2"><span class="badge-status status-${s.status}">${s.status}</span>${s.status==='draft'||s.edit_permission?`<span class="badge bg-primary">✏️ Editable</span>`:`<span class="badge bg-secondary"><i class="bi bi-lock"></i> Locked</span>`}</div></div></a>`).join(''):`<div class="empty-state"><i class="bi bi-journal-x"></i><h6>No submissions here</h6></div>`}
+        ${subs.length?subs.map(s=>`<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap py-3 border-bottom table-row-clickable" style="border-color:var(--ts-border)!important;" onclick="App.go('view-submission/${s._docId}')"><div class="flex-grow-1 min-w-0"><div class="fw-semibold fs-6">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);margin-top:.25rem;"><span class="badge-status" style="background:rgba(124,92,255,.15);color:var(--ts-primary-2);">${WORK_TYPES[s.work_type]||s.work_type}</span>${s.sector?` · ${this.esc(s.sector)}`:''} · Updated ${this.ago(s.updated_at)}${s.attachments?.length?` · <i class="bi bi-paperclip"></i> ${s.attachments.length}`:''}</div></div><div class="d-flex gap-2"><span class="badge-status status-${s.status}">${s.status}</span>${s.status==='draft'||s.edit_permission?`<span class="badge bg-primary">✏️ Editable</span>`:`<span class="badge bg-secondary"><i class="bi bi-lock"></i> Locked</span>`}</div></div>`).join(''):`<div class="empty-state"><i class="bi bi-journal-x"></i><h6>No submissions here</h6></div>`}
       </div></div>
     </div>`;
   },
@@ -689,10 +623,10 @@ const App = {
     let existing = null;
     if(editId){
       existing = this.submissions.find(s=>s._docId===editId&&s.user_id===u._docId);
-      if(!existing){this.toast('Not found.','danger');return this.go('dashboard')}
+      if(!existing){ this.toast('Not found.','danger'); return this.go('dashboard'); }
       const canEdit = existing.status === 'draft' || existing.edit_permission === true;
-      if(!canEdit){this.toast('Only drafts or founder-approved edits can be edited.','warning');return this.go('view-submission/'+editId)}
-      this._pendingFiles = existing.attachments?[...existing.attachments]:[];
+      if(!canEdit){ this.toast('Only drafts or founder-approved edits can be edited.','warning'); return this.go('view-submission/'+editId); }
+      this._pendingFiles = existing.attachments ? [...existing.attachments] : [];
     } else this._pendingFiles = [];
     document.getElementById('app').innerHTML = `
     <div class="container py-5">
@@ -718,8 +652,8 @@ const App = {
           </div></div>
           <div class="card mb-3"><div class="card-body">
             <h6 class="mb-1"><i class="bi bi-paperclip"></i> Attachments</h6>
-            <p class="small mb-3" style="color:var(--ts-muted);">PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, JPG, PNG, WEBP · Max 1.5 MB per file</p>
-            <div class="file-drop" onclick="document.getElementById('fileInput').click()"><i class="bi bi-cloud-upload"></i><div class="fw-semibold mt-2">Click to upload</div><input type="file" id="fileInput" hidden multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.jpg,.jpeg,.png,.webp,.gif" onchange="App.handleFilesPick(this)"></div>
+            <p class="small mb-3" style="color:var(--ts-muted);">PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, JPG, PNG, WEBP · <strong>No size limit</strong> (up to Firebase Storage 5 GB)</p>
+            <div class="file-drop" onclick="document.getElementById('fileInput').click()"><i class="bi bi-cloud-upload"></i><div class="fw-semibold mt-2">Click to upload</div><div class="small" style="color:var(--ts-muted);">Upload any size</div><input type="file" id="fileInput" hidden multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.jpg,.jpeg,.png,.webp,.gif" onchange="App.handleFilesPick(this)"></div>
             <div id="fileList" class="mt-3"></div>
           </div></div>
         </div>
@@ -735,56 +669,69 @@ const App = {
   async handleFilesPick(input){
     const files = Array.from(input.files||[]);
     for(const f of files){
-      if(f.size>MAX_FILE_SIZE){this.toast(`"${f.name}" too big (max 1.5 MB).`,'danger');continue}
+      if(f.size > MAX_FILE_SIZE){ this.toast(`"${f.name}" too big (max 100 MB).`,'danger'); continue; }
       const ok = ALLOWED_TYPES.includes(f.type) || /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|jpe?g|png|webp|gif)$/i.test(f.name);
-      if(!ok){this.toast(`File type not allowed: ${f.name}`,'danger');continue}
-      try{const data=await Utils.readAsDataURL(f);this._pendingFiles.push({name:f.name,type:f.type||'application/octet-stream',size:f.size,data})}catch(e){this.toast(`Could not read ${f.name}`,'danger')}
+      if(!ok){ this.toast(`File type not allowed: ${f.name}`,'danger'); continue; }
+      this._pendingFiles.push({ name: f.name, type: f.type || 'application/octet-stream', size: f.size, _file: f, _progress: 0 });
     }
-    input.value=''; this.renderPendingFiles();
+    input.value = '';
+    this.renderPendingFiles();
   },
 
   renderPendingFiles(){
     const el = document.getElementById('fileList'); if(!el) return;
-    if(!this._pendingFiles.length){el.innerHTML='';return}
-    el.innerHTML = this._pendingFiles.map((f,i)=>`<div class="file-preview"><i class="bi ${Utils.fileIcon(f.type,f.name)} file-ic"></i><div class="file-info"><div class="file-name">${this.esc(f.name)}</div><div class="file-meta">${Utils.fmtBytes(f.size)}</div></div><div class="file-actions"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.previewData(${i})"><i class="bi bi-eye"></i></button><button type="button" class="btn btn-sm btn-outline-danger" onclick="App.removeFile(${i})"><i class="bi bi-x-lg"></i></button></div></div>`).join('');
+    if(!this._pendingFiles.length){ el.innerHTML=''; return; }
+    el.innerHTML = this._pendingFiles.map((f,i)=>`<div class="file-preview"><i class="bi ${Utils.fileIcon(f.type,f.name)} file-ic"></i><div class="file-info"><div class="file-name">${this.esc(f.name)}</div><div class="file-meta">${Utils.fmtBytes(f.size)}${f.url?' · <span class="text-success">✓ uploaded</span>':''}</div></div><div class="file-actions"><button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.previewPending(${i})"><i class="bi bi-eye"></i></button><button type="button" class="btn btn-sm btn-outline-danger" onclick="App.removeFile(${i})"><i class="bi bi-x-lg"></i></button></div></div>`).join('');
   },
-  previewData(i){const f=this._pendingFiles[i];if(!f)return;this.openPreview(f.name,f.type,f.data)},
-  removeFile(i){if(!confirm('Remove this file?'))return;this._pendingFiles.splice(i,1);this.renderPendingFiles()},
+  previewPending(i){
+    const f = this._pendingFiles[i]; if(!f) return;
+    if(f.url){ this.openPreview(f.name, f.type, f.url); return; }
+    if(f._file){ const url = URL.createObjectURL(f._file); this.openPreview(f.name, f.type, url); return; }
+    this.toast('No preview available.','info');
+  },
+  removeFile(i){ if(!confirm('Remove this file?')) return; this._pendingFiles.splice(i,1); this.renderPendingFiles(); },
 
   async saveSubmission(e, editId){
     e.preventDefault();
     const u = this.currentUser;
     const fd = new FormData(e.target);
-    const data = {title:(fd.get('title')||'').trim(),work_type:fd.get('work_type')||'',sector:fd.get('sector')||'',problem:(fd.get('problem')||'').trim(),research:(fd.get('research')||'').trim(),findings:(fd.get('findings')||'').trim(),solution:(fd.get('solution')||'').trim(),attachments:this._pendingFiles};
+    const data = { title:(fd.get('title')||'').trim(), work_type:fd.get('work_type')||'', sector:fd.get('sector')||'', problem:(fd.get('problem')||'').trim(), research:(fd.get('research')||'').trim(), findings:(fd.get('findings')||'').trim(), solution:(fd.get('solution')||'').trim() };
     if(!data.title||!data.work_type||!data.problem) return this.toast('Title, type and problem required.','danger');
     const action = e.submitter?.value || 'save';
-    const btn = e.submitter; if(btn){btn.disabled=true;btn.innerHTML='<span class="spinner-border spinner-border-sm"></span> Saving…'}
+    const btn = e.submitter;
+    if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving…'; }
 
     try {
       let subId;
+      const meta = { ...data, status: action==='submit' ? 'submitted' : 'draft', edit_permission: false, submitted_at: action==='submit' ? this.now() : null, attachments: [] };
       if(editId){
-        const patch = {...data};
-        if(action==='submit'){ patch.status='submitted'; patch.submitted_at=this.now(); patch.edit_permission=false; }
-        await Cloud.updateSubmission(editId, patch);
+        const existing = this.submissions.find(s => s._docId === editId);
+        if(!existing) throw new Error('Submission not found');
+        await Cloud.updateSubmission(editId, meta);
         subId = editId;
       } else {
-        subId = await Cloud.createSubmission({
-          ...data,
-          user_id: u._docId,
-          status: action==='submit'?'submitted':'draft',
-          edit_permission: false,
-          submitted_at: action==='submit'?this.now():null
-        });
+        subId = await Cloud.createSubmission({ ...meta, user_id: u._docId });
       }
 
+      this.toast('Uploading files…','info',3000);
+      const uploadedFiles = [];
+      for(let i = 0; i < this._pendingFiles.length; i++){
+        const pf = this._pendingFiles[i];
+        if(pf.url){ uploadedFiles.push({ name: pf.name, type: pf.type, size: pf.size, url: pf.url, storagePath: pf.storagePath }); continue; }
+        if(pf._file){
+          try {
+            const result = await Cloud.uploadFile(subId, pf._file);
+            uploadedFiles.push({ name: pf.name, type: pf.type, size: pf.size, url: result.url, storagePath: result.storagePath });
+          } catch(err){
+            console.error('Upload failed:', err);
+            this.toast(`Upload failed for ${pf.name}: ${err.message}`, 'danger', 6000);
+          }
+        }
+      }
+      await Cloud.updateSubmission(subId, { attachments: uploadedFiles });
+
       const vCount = (await Cloud.getVersions(subId)).length;
-      await Cloud.addVersion({
-        submission_id: subId,
-        version: vCount + 1,
-        snapshot: JSON.stringify({...data, attachments: data.attachments.map(a=>({name:a.name,type:a.type,size:a.size}))}),
-        changed_by: u._docId,
-        change_type: editId ? 'update' : 'create'
-      });
+      await Cloud.addVersion({ submission_id: subId, version: vCount + 1, snapshot: JSON.stringify({...data, attachments: uploadedFiles.map(a=>({name:a.name,type:a.type,size:a.size}))}), changed_by: u._docId, change_type: editId ? 'update' : 'create' });
 
       if(action==='submit'){
         await this.log('submission.submit', `Submitted for review: ${data.title}`);
@@ -794,27 +741,26 @@ const App = {
         await this.log(editId?'submission.update':'submission.create', data.title);
         this.toast('✓ Draft saved.','success');
       }
-
       this.submissions = await Cloud.getSubmissions();
       this.go('view-submission/' + subId);
     } catch(err){
       console.error(err);
       this.toast('Save failed: ' + err.message, 'danger', 6000);
-      if(btn){btn.disabled=false;btn.innerHTML='Save'}
+      if(btn){ btn.disabled = false; btn.innerHTML = 'Save'; }
     }
   },
 
   async pageViewSubmission(id){
     if(!this.requireAuth()) return;
     const sub = this.submissions.find(s=>s._docId===id);
-    if(!sub){this.toast('Not found.','danger');return this.go('dashboard')}
+    if(!sub){ this.toast('Not found.','danger'); return this.go('dashboard'); }
     const u = this.currentUser;
-    const isOwner = sub.user_id===u._docId;
-    const isFounder = u.role==='founder';
-    if(!isOwner && !isFounder){this.toast('Access denied.','danger');return this.go('dashboard')}
+    const isOwner = sub.user_id === u._docId;
+    const isFounder = u.role === 'founder';
+    if(!isOwner && !isFounder){ this.toast('Access denied.','danger'); return this.go('dashboard'); }
     const author = this.users.find(x=>x._docId===sub.user_id);
     const versions = await Cloud.getVersions(id);
-    const canEdit = isOwner && (sub.status==='draft' || sub.edit_permission===true);
+    const canEdit = isOwner && (sub.status === 'draft' || sub.edit_permission === true);
     const canDeleteFiles = canEdit || isFounder;
     document.getElementById('app').innerHTML = `
     <div class="container py-5">
@@ -839,6 +785,7 @@ const App = {
         <div class="d-flex gap-2 flex-wrap align-items-center">
           ${['submitted','under_review'].includes(sub.status)?`<button class="btn btn-success btn-sm" onclick="App.founderSubmissionAction('${id}','approve')"><i class="bi bi-check-circle-fill"></i> Approve</button>`:''}
           ${sub.status!=='archived'?`<button class="btn btn-outline-secondary btn-sm" onclick="App.founderSubmissionAction('${id}','archive')"><i class="bi bi-archive-fill"></i> Archive</button>`:`<button class="btn btn-outline-success btn-sm" onclick="App.founderSubmissionAction('${id}','restore')"><i class="bi bi-arrow-counterclockwise"></i> Restore</button>`}
+          <button class="btn btn-outline-danger btn-sm" onclick="App.deleteSubmission('${id}')"><i class="bi bi-trash"></i> Delete</button>
           <div class="form-check form-switch ms-2">
             <input class="form-check-input" type="checkbox" id="permToggle" ${sub.edit_permission?'checked':''} onchange="App.toggleEditPermission('${id}', this.checked)">
             <label class="form-check-label small" for="permToggle">Allow author to edit</label>
@@ -862,6 +809,24 @@ const App = {
     </div>`;
   },
 
+  async deleteSubmission(id){
+    if(!this.requireFounder()) return;
+    const sub = this.submissions.find(s=>s._docId===id);
+    if(!sub) return;
+    if(!confirm(`⚠️ PERMANENTLY DELETE "${sub.title}"?\n\nThis cannot be undone.`)) return;
+    if(!confirm(`🚨 FINAL WARNING\n\nAll data and files for this submission will be deleted forever.`)) return;
+    try {
+      if(sub.attachments?.length){
+        for(const a of sub.attachments){ if(a.storagePath) await Cloud.deleteStorageFile(a.storagePath); }
+      }
+      await Cloud.deleteSubmission(id);
+      await this.log('submission.delete', `Permanently deleted: ${sub.title}`);
+      this.submissions = this.submissions.filter(x => x._docId !== id);
+      this.toast('✓ Submission permanently deleted.','success');
+      this.go('admin-submissions');
+    } catch(e){ this.toast('Delete failed: '+e.message,'danger'); }
+  },
+
   async toggleEditPermission(subId, granted){
     if(!this.requireFounder()) return;
     try {
@@ -880,7 +845,9 @@ const App = {
     const sub = this.submissions.find(s=>s._docId===subId);
     if(!sub?.attachments?.[fileIdx]) return this.toast('File not found.','danger');
     const f = sub.attachments[fileIdx];
-    const a = document.createElement('a'); a.href = f.data; a.download = f.name;
+    const src = f.url || f.data;
+    if(!src) return this.toast('File source missing.','danger');
+    const a = document.createElement('a'); a.href = src; a.download = f.name; a.target = '_blank';
     document.body.appendChild(a); a.click(); a.remove();
     this.toast(`Downloading ${f.name}`,'success');
   },
@@ -889,19 +856,20 @@ const App = {
     const sub = this.submissions.find(s=>s._docId===subId);
     if(!sub?.attachments?.[fileIdx]) return;
     const f = sub.attachments[fileIdx];
-    this.openPreview(f.name,f.type,f.data);
+    const src = f.url || f.data;
+    if(!src) return this.toast('No preview available.','info');
+    this.openPreview(f.name, f.type, src);
   },
 
-  openPreview(name,type,dataUrl){
+  openPreview(name,type,src){
     const modalEl = document.getElementById('filePreviewModal');
     document.getElementById('filePreviewTitle').textContent = name;
     const body = document.getElementById('filePreviewBody');
-    document.getElementById('filePreviewDownload').onclick = ()=>{const a=document.createElement('a');a.href=dataUrl;a.download=name;document.body.appendChild(a);a.click();a.remove()};
-    if(Utils.isPDF({type,name})) body.innerHTML = `<iframe class="preview-frame" src="${dataUrl}"></iframe>`;
-    else if(Utils.isImage({type,name})) body.innerHTML = `<img src="${dataUrl}" class="preview-image">`;
-    else if((type||'').includes('text')||/\.txt$/i.test(name)){
-      try{const b64=dataUrl.split(',')[1];const text=decodeURIComponent(escape(atob(b64)));body.innerHTML=`<div class="preview-text">${this.esc(text)}</div>`}catch{body.innerHTML=`<div class="p-4">Cannot decode.</div>`}
-    } else body.innerHTML = `<div class="p-4 text-center"><i class="bi bi-file-earmark fs-1" style="color:var(--ts-muted);"></i><p class="mt-3 mb-0" style="color:var(--ts-muted);">Preview not available.</p></div>`;
+    document.getElementById('filePreviewDownload').onclick = ()=>{ const a=document.createElement('a'); a.href=src; a.download=name; a.target='_blank'; document.body.appendChild(a); a.click(); a.remove(); };
+    if(Utils.isPDF({type,name})) body.innerHTML = `<iframe class="preview-frame" src="${src}"></iframe>`;
+    else if(Utils.isImage({type,name})) body.innerHTML = `<img src="${src}" class="preview-image">`;
+    else if((type||'').includes('text')||/\.txt$/i.test(name)){ if(src.startsWith('data:')){ try{ const b64=src.split(',')[1]; const text=decodeURIComponent(escape(atob(b64))); body.innerHTML=`<div class="preview-text">${this.esc(text)}</div>`; }catch{ body.innerHTML=`<div class="p-4">Cannot decode.</div>`; } } else { body.innerHTML = `<iframe class="preview-frame" src="${src}"></iframe>`; } }
+    else body.innerHTML = `<div class="p-4 text-center"><i class="bi bi-file-earmark fs-1" style="color:var(--ts-muted);"></i><p class="mt-3 mb-0" style="color:var(--ts-muted);">Preview not available.</p><a class="btn btn-primary mt-3" href="${src}" target="_blank" download="${name}"><i class="bi bi-download"></i> Download</a></div>`;
     bootstrap.Modal.getOrCreateInstance(modalEl).show();
   },
 
@@ -915,6 +883,7 @@ const App = {
     const f = sub.attachments[fileIdx]; if(!f) return;
     if(!confirm(`Delete "${f.name}"?`)) return;
     try {
+      if(f.storagePath) await Cloud.deleteStorageFile(f.storagePath);
       const newAttachments = [...sub.attachments]; newAttachments.splice(fileIdx,1);
       await Cloud.updateSubmission(subId, { attachments: newAttachments });
       sub.attachments = newAttachments;
@@ -1048,9 +1017,9 @@ const App = {
     if(!file.type.startsWith('image/')) return this.toast('Please pick an image.','danger');
     if(file.size>MAX_AVATAR_SIZE) return this.toast('Max 5 MB.','danger');
     this.toast('Processing…','info',1500);
-    try{const c=await Utils.compressImage(file,320,0.82);this._pendingAvatar=c;document.getElementById('avatarPreviewEdit').innerHTML=`<img src="${c}" class="avatar-lg">`}catch(e){this.toast('Failed.','danger')}
+    try { const c=await Utils.compressImage(file,320,0.82); this._pendingAvatar = c; document.getElementById('avatarPreviewEdit').innerHTML = `<img src="${c}" class="avatar-lg">`; } catch(e){ this.toast('Failed.','danger'); }
   },
-  removeAvatar(){this._pendingAvatar=null;document.getElementById('avatarPreviewEdit').innerHTML=this.avatarHtml(this.currentUser,'avatar-lg');this.toast('Will be removed.','info')},
+  removeAvatar(){ this._pendingAvatar = null; document.getElementById('avatarPreviewEdit').innerHTML = this.avatarHtml(this.currentUser,'avatar-lg'); this.toast('Will be removed.','info'); },
 
   async saveProfile(e){
     e.preventDefault();
@@ -1058,14 +1027,7 @@ const App = {
     btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     const fd = new FormData(e.target);
     try {
-      await Cloud.updateUser(this.currentUser._docId, {
-        full_name: (fd.get('full_name')||'').trim(),
-        gender: fd.get('gender'),
-        age: parseInt(fd.get('age'))||null,
-        sector: fd.get('sector')||'',
-        bio: (fd.get('bio')||'').trim(),
-        avatar: this._pendingAvatar
-      });
+      await Cloud.updateUser(this.currentUser._docId, { full_name: (fd.get('full_name')||'').trim(), gender: fd.get('gender'), age: parseInt(fd.get('age'))||null, sector: fd.get('sector')||'', bio: (fd.get('bio')||'').trim(), avatar: this._pendingAvatar });
       await this.refreshUser();
       await this.log('profile.update','Profile updated');
       this.toast('✓ Saved.','success');
@@ -1088,7 +1050,7 @@ const App = {
   pageMemberView(id){
     if(!this.requireAuth()) return;
     const u = this.users.find(x=>x._docId===id&&x.status==='active');
-    if(!u){this.toast('Not found.','danger');return this.go('members')}
+    if(!u){ this.toast('Not found.','danger'); return this.go('members'); }
     if(u._docId===this.currentUser._docId) return this.go('profile');
     const subs = this.submissions.filter(s=>s.user_id===u._docId&&s.status==='approved');
     document.getElementById('app').innerHTML = `
@@ -1130,31 +1092,25 @@ const App = {
     </div>`;
   },
 
-  async markRead(id){
-    try{ await Cloud.updateNotification(id, { is_read: true }); const n = this.notifications.find(x=>x._docId===id); if(n) n.is_read = true; this.renderNav(); if(this.currentRoute==='notifications') this.pageNotifications(); }catch(e){}
-  },
-  async markAllRead(){
-    const unread = this.notifications.filter(n=>!n.is_read);
-    for(const n of unread) await Cloud.updateNotification(n._docId, { is_read: true });
-    unread.forEach(n=>n.is_read=true);
-    this.toast('✓ Marked all read.','success');
-    this.renderNav(); this.pageNotifications();
-  },
+  async markRead(id){ try{ await Cloud.updateNotification(id, { is_read: true }); const n = this.notifications.find(x=>x._docId===id); if(n) n.is_read = true; this.renderNav(); if(this.currentRoute==='notifications') this.pageNotifications(); }catch(e){} },
+  async markAllRead(){ const unread = this.notifications.filter(n=>!n.is_read); for(const n of unread) await Cloud.updateNotification(n._docId, { is_read: true }); unread.forEach(n=>n.is_read=true); this.toast('✓ Marked all read.','success'); this.renderNav(); this.pageNotifications(); },
 
   sidebar(active){
     const members = this.users.filter(u=>u.role==='member');
     const subs = this.submissions;
     const pending = members.filter(m=>m.status==='pending').length;
     const pendingSubs = subs.filter(s=>['submitted','under_review'].includes(s.status)).length;
-    return `<div class="sidebar">
-      <div class="sidebar-link ${active==='admin'?'active':''}" onclick="App.go('admin')"><i class="bi bi-grid-1x2-fill"></i> Dashboard</div>
-      <div class="sidebar-link ${active==='admin-members'?'active':''}" onclick="App.go('admin-members')"><i class="bi bi-people-fill"></i> Members ${pending?`<span class="badge bg-warning text-dark ms-auto">${pending}</span>`:''}</div>
-      <div class="sidebar-link ${active==='admin-submissions'?'active':''}" onclick="App.go('admin-submissions')"><i class="bi bi-journal-text"></i> Submissions ${pendingSubs?`<span class="badge bg-info ms-auto">${pendingSubs}</span>`:''}</div>
-      <div class="sidebar-link ${active==='admin-activity'?'active':''}" onclick="App.go('admin-activity')"><i class="bi bi-activity"></i> Activity Log</div>
-      <div class="sidebar-link" onclick="App.go('members')"><i class="bi bi-people"></i> Team Directory</div>
-      <div class="sidebar-link" onclick="App.go('profile')"><i class="bi bi-person-circle"></i> My Profile</div>
-      <div class="sidebar-link text-danger" onclick="App.go('logout')"><i class="bi bi-box-arrow-right"></i> Logout</div>
-    </div>`;
+    return `<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="App.closeSidebar()"></div>
+      <div class="sidebar" id="mainSidebar">
+        <div class="sidebar-link ${active==='admin'?'active':''}" onclick="App.go('admin')"><i class="bi bi-grid-1x2-fill"></i> Dashboard</div>
+        <div class="sidebar-link ${active==='admin-members'?'active':''}" onclick="App.go('admin-members')"><i class="bi bi-people-fill"></i> Members ${pending?`<span class="badge bg-warning text-dark ms-auto">${pending}</span>`:''}</div>
+        <div class="sidebar-link ${active==='admin-submissions'?'active':''}" onclick="App.go('admin-submissions')"><i class="bi bi-journal-text"></i> Submissions ${pendingSubs?`<span class="badge bg-info ms-auto">${pendingSubs}</span>`:''}</div>
+        <div class="sidebar-link ${active==='admin-activity'?'active':''}" onclick="App.go('admin-activity')"><i class="bi bi-activity"></i> Activity Log</div>
+        <div class="sidebar-link" onclick="App.go('members')"><i class="bi bi-people"></i> Team Directory</div>
+        <div class="sidebar-link" onclick="App.go('profile')"><i class="bi bi-person-circle"></i> My Profile</div>
+        <div class="sidebar-link text-danger" onclick="App.go('logout')"><i class="bi bi-box-arrow-right"></i> Logout</div>
+      </div>
+      <button class="sidebar-hamburger" onclick="App.toggleSidebar()" aria-label="Menu"><i class="bi bi-list"></i></button>`;
   },
 
   pageAdmin(){
@@ -1182,7 +1138,7 @@ const App = {
           </div></div></div>
           <div class="col-lg-6"><div class="card h-100"><div class="card-body">
             <h5 class="mb-3"><i class="bi bi-journal-text"></i> Recent Submissions</h5>
-            ${subs.length?subs.slice(0,5).map(s=>{const a = this.users.find(u=>u._docId===s.user_id);return `<a href="#view-submission/${s._docId}" class="d-block text-decoration-none py-2 border-bottom" style="border-color:var(--ts-border)!important;color:inherit;"><div class="fw-semibold small">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);font-size:.75rem;">${this.esc(a?.full_name||'?')} · <span class="badge-status status-${s.status}">${s.status}</span></div></a>`;}).join(''):'<p class="small mb-0" style="color:var(--ts-muted);">No submissions.</p>'}
+            ${subs.length?subs.slice(0,5).map(s=>{ const a = this.users.find(u=>u._docId===s.user_id); return `<div class="py-2 border-bottom table-row-clickable" style="border-color:var(--ts-border)!important;" onclick="App.go('view-submission/${s._docId}')"><div class="fw-semibold small">${this.esc(s.title)}</div><div class="small" style="color:var(--ts-muted);font-size:.75rem;">${this.esc(a?.full_name||'?')} · <span class="badge-status status-${s.status}">${s.status}</span></div></div>`; }).join(''):'<p class="small mb-0" style="color:var(--ts-muted);">No submissions.</p>'}
           </div></div></div>
           <div class="col-lg-12"><div class="card"><div class="card-body">
             <h5 class="mb-3"><i class="bi bi-activity"></i> Recent Activity</h5>
@@ -1196,7 +1152,7 @@ const App = {
   pageAdminMembers(filter='all'){
     if(!this.requireFounder()) return;
     let members = this.users.filter(u=>u.role==='member');
-    const allCounts = {all:members.length,pending:members.filter(m=>m.status==='pending').length,active:members.filter(m=>m.status==='active').length,suspended:members.filter(m=>m.status==='suspended').length,deactivated:members.filter(m=>m.status==='deactivated').length};
+    const allCounts = { all:members.length, pending:members.filter(m=>m.status==='pending').length, active:members.filter(m=>m.status==='active').length, suspended:members.filter(m=>m.status==='suspended').length, deactivated:members.filter(m=>m.status==='deactivated').length };
     if(filter!=='all') members = members.filter(m=>m.status===filter);
     document.getElementById('app').innerHTML = `
     <div class="container-fluid py-4 px-lg-5"><div class="row g-0">
@@ -1211,20 +1167,21 @@ const App = {
           <a href="#admin-members/pending" class="btn btn-sm ${filter==='pending'?'btn-warning':'btn-outline-secondary'}">Pending (${allCounts.pending})</a>
           <a href="#admin-members/active" class="btn btn-sm ${filter==='active'?'btn-success':'btn-outline-secondary'}">Active (${allCounts.active})</a>
           <a href="#admin-members/suspended" class="btn btn-sm ${filter==='suspended'?'btn-danger':'btn-outline-secondary'}">Suspended (${allCounts.suspended})</a>
+          <a href="#admin-members/deactivated" class="btn btn-sm ${filter==='deactivated'?'btn-secondary':'btn-outline-secondary'}">Deactivated (${allCounts.deactivated})</a>
         </div>
         <div class="card"><div class="card-body p-0">
           ${members.length?`<div class="table-responsive"><table class="table align-middle mb-0" style="color:inherit;">
             <thead><tr><th></th><th>Name</th><th>Email</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
-            <tbody>${members.map(m=>`<tr>
+            <tbody>${members.map(m=>`<tr class="table-row-clickable" onclick="if(!event.target.closest('button, a')) App.go('member-view/${m._docId}')">
               <td>${this.avatarHtml(m,'avatar-sm')}</td>
               <td><strong>${this.esc(m.full_name)}</strong></td>
               <td class="small">${this.esc(m.email)}</td>
               <td><span class="badge-status status-${m.status}">${m.status}</span></td>
               <td class="text-end">
-                ${m.status==='pending'?`<button class="btn btn-success btn-sm py-0 px-2" onclick="App.memberAction('${m._docId}','approve')">Approve</button>`:''}
-                ${m.status==='active'?`<button class="btn btn-warning btn-sm py-0 px-2" onclick="App.memberAction('${m._docId}','suspend')">Suspend</button>`:''}
-                ${m.status==='suspended'?`<button class="btn btn-success btn-sm py-0 px-2" onclick="App.memberAction('${m._docId}','reactivate')">Reactivate</button>`:''}
-                <a href="#member-view/${m._docId}" class="btn btn-sm btn-outline-secondary py-0 px-2">View</a>
+                ${m.status==='pending'?`<button class="btn btn-success btn-sm py-0 px-2" onclick="event.stopPropagation();App.memberAction('${m._docId}','approve')">Approve</button>`:''}
+                ${m.status==='active'?`<button class="btn btn-warning btn-sm py-0 px-2" onclick="event.stopPropagation();App.memberAction('${m._docId}','suspend')">Suspend</button>`:''}
+                ${m.status==='suspended'?`<button class="btn btn-success btn-sm py-0 px-2 me-1" onclick="event.stopPropagation();App.memberAction('${m._docId}','reactivate')">Reactivate</button>`:''}
+                ${(m.status==='suspended'||m.status==='deactivated')?`<button class="btn btn-danger btn-sm py-0 px-2 ms-1" onclick="event.stopPropagation();App.deleteMember('${m._docId}')" title="Permanently Delete"><i class="bi bi-trash"></i></button>`:''}
               </td>
             </tr>`).join('')}</tbody>
           </table></div>`:'<div class="empty-state"><i class="bi bi-people"></i><h6>No members</h6></div>'}
@@ -1249,10 +1206,30 @@ const App = {
     } catch(e){ this.toast('Failed: '+e.message,'danger'); }
   },
 
+  async deleteMember(id){
+    if(!this.requireFounder()) return;
+    const u = this.users.find(x=>x._docId===id);
+    if(!u) return;
+    if(!confirm(`⚠️ PERMANENTLY DELETE "${u.full_name}"?\n\nThis cannot be undone.`)) return;
+    if(!confirm(`🚨 FINAL WARNING\n\nDelete ${u.full_name} (${u.email}) permanently?`)) return;
+    try {
+      await Cloud.deleteUser(id);
+      await this.log('member.delete', `Permanently deleted: ${u.full_name}`);
+      this.users = this.users.filter(x => x._docId !== id);
+      this.toast(`✓ ${u.full_name} permanently deleted.`, 'success');
+      this.pageAdminMembers(this.currentRoute.split('/')[1] || 'all');
+    } catch(e){ this.toast('Delete failed: '+e.message,'danger'); }
+  },
+
+  filterAdminSubs(val){ this._adminSubSector = val || 'all'; const parts = this.currentRoute.split('/'); this.pageAdminSubmissions(parts[1] || 'all'); },
+
   pageAdminSubmissions(filter='all'){
     if(!this.requireFounder()) return;
-    let subs = this.submissions;
-    const counts = {all:subs.length,awaiting:subs.filter(s=>['submitted','under_review'].includes(s.status)).length,approved:subs.filter(s=>s.status==='approved').length,draft:subs.filter(s=>s.status==='draft').length,archived:subs.filter(s=>s.status==='archived').length};
+    const sectorFilter = this._adminSubSector || 'all';
+    let allSubs = this.submissions;
+    if(sectorFilter !== 'all') allSubs = allSubs.filter(s => s.sector === sectorFilter);
+    let subs = allSubs;
+    const counts = { all:allSubs.length, awaiting:allSubs.filter(s=>['submitted','under_review'].includes(s.status)).length, approved:allSubs.filter(s=>s.status==='approved').length, draft:allSubs.filter(s=>s.status==='draft').length, archived:allSubs.filter(s=>s.status==='archived').length };
     if(filter==='awaiting') subs = subs.filter(s=>['submitted','under_review'].includes(s.status));
     else if(filter==='approved') subs = subs.filter(s=>s.status==='approved');
     else if(filter==='draft') subs = subs.filter(s=>s.status==='draft');
@@ -1265,24 +1242,29 @@ const App = {
           <h3 class="mb-0">All Submissions <span class="badge bg-secondary">${subs.length}</span></h3>
           <a href="#admin" class="btn btn-outline-secondary btn-sm">← Dashboard</a>
         </div>
-        <div class="mb-3 d-flex gap-2 flex-wrap">
+        <div class="mb-3 d-flex gap-2 flex-wrap align-items-center">
           <a href="#admin-submissions/all" class="btn btn-sm ${filter==='all'?'btn-primary':'btn-outline-secondary'}">All (${counts.all})</a>
           <a href="#admin-submissions/awaiting" class="btn btn-sm ${filter==='awaiting'?'btn-info':'btn-outline-secondary'}">Awaiting (${counts.awaiting})</a>
           <a href="#admin-submissions/approved" class="btn btn-sm ${filter==='approved'?'btn-success':'btn-outline-secondary'}">Approved (${counts.approved})</a>
           <a href="#admin-submissions/draft" class="btn btn-sm ${filter==='draft'?'btn-warning':'btn-outline-secondary'}">Drafts (${counts.draft})</a>
+          <select class="form-select form-select-sm ms-auto" style="max-width:230px;" onchange="App.filterAdminSubs(this.value)">
+            <option value="all" ${sectorFilter==='all'?'selected':''}>All Sectors</option>
+            ${SECTORS.map(s=>`<option value="${this.esc(s)}" ${sectorFilter===s?'selected':''}>${this.esc(s)}</option>`).join('')}
+          </select>
         </div>
         <div class="card"><div class="card-body p-0">
           ${subs.length?`<div class="table-responsive"><table class="table align-middle mb-0" style="color:inherit;">
-            <thead><tr><th>Title</th><th>Author</th><th>Files</th><th>Edit</th><th>Status</th><th></th></tr></thead>
-            <tbody>${subs.map(s=>{const a=this.users.find(u=>u._docId===s.user_id);return `<tr>
+            <thead><tr><th>Title</th><th>Author</th><th>Sector</th><th>Files</th><th>Edit</th><th>Status</th><th></th></tr></thead>
+            <tbody>${subs.map(s=>{ const a=this.users.find(u=>u._docId===s.user_id); return `<tr class="table-row-clickable" onclick="App.go('view-submission/${s._docId}')">
               <td><strong>${this.esc(s.title)}</strong></td>
               <td class="small">${this.esc(a?.full_name||'—')}</td>
+              <td class="small">${this.esc(s.sector||'—')}</td>
               <td class="small">${s.attachments?.length?`<i class="bi bi-paperclip"></i> ${s.attachments.length}`:'—'}</td>
               <td>${s.edit_permission?'<span class="badge bg-warning text-dark"><i class="bi bi-unlock-fill"></i></span>':'<span class="badge bg-secondary"><i class="bi bi-lock"></i></span>'}</td>
               <td><span class="badge-status status-${s.status}">${s.status}</span></td>
-              <td class="text-end"><a href="#view-submission/${s._docId}" class="btn btn-sm btn-outline-secondary py-0">View</a></td>
-            </tr>`;}).join('')}</tbody>
-          </table></div>`:'<div class="empty-state"><i class="bi bi-journal-x"></i><h6>None</h6></div>'}
+              <td class="text-end"><button class="btn btn-sm btn-outline-secondary py-0" onclick="event.stopPropagation();App.go('view-submission/${s._docId}')">View</button></td>
+            </tr>`; }).join('')}</tbody>
+          </table></div>`:'<div class="empty-state"><i class="bi bi-journal-x"></i><h6>No submissions found</h6></div>'}
         </div></div>
       </div>
     </div></div>`;
@@ -1309,8 +1291,6 @@ const App = {
 };
 
 document.addEventListener('DOMContentLoaded',()=>{
-  const savedTheme = localStorage.getItem('ts_theme');
-  if(savedTheme) document.documentElement.setAttribute('data-bs-theme', savedTheme);
   App.init();
 });
 </script>
